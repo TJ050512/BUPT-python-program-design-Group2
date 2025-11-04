@@ -1,0 +1,54 @@
+# 系统配置文件
+
+# 应用配置
+app:
+  name: "智能数据管理系统"
+  version: "1.0.0"
+  debug: true
+
+# 数据库配置
+database:
+  type: "sqlite"           # sqlite / mysql / postgresql
+  path: "data/app.db"      # SQLite数据库路径
+  # 如果使用MySQL/PostgreSQL，使用以下配置：
+  # host: "localhost"
+  # port: 3306
+  # database: "idms"
+  # user: "root"
+  # password: "password"
+
+# 网络配置
+network:
+  server:
+    host: "localhost"
+    port: 8888
+    max_connections: 10
+  client:
+    timeout: 30            # 连接超时（秒）
+    retry_times: 3         # 重试次数
+
+# 日志配置
+logging:
+  level: "INFO"            # DEBUG / INFO / WARNING / ERROR / CRITICAL
+  file: "logs/app.log"
+  max_size: 10485760       # 10MB
+  backup_count: 5
+
+# GUI配置
+gui:
+  theme: "dark-blue"       # dark-blue / green / dark-green
+  window_size: "1200x800"
+  font_size: 14
+
+# 缓存配置
+cache:
+  enabled: true
+  max_size: 100            # 最大缓存条目数
+  expire_time: 3600        # 缓存过期时间（秒）
+
+# 数据分析配置
+analysis:
+  chart_style: "seaborn"   # 图表风格
+  figure_size: [10, 6]     # 图表默认大小
+  dpi: 100                 # 图表分辨率
+

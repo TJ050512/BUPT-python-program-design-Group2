@@ -1,0 +1,36 @@
+{
+  "roles": {
+    "admin": {
+      "name": "管理员",
+      "permissions": [
+        "view_data",
+        "add_data",
+        "edit_data",
+        "delete_data",
+        "manage_users",
+        "view_logs",
+        "export_data",
+        "view_analysis"
+      ]
+    },
+    "user": {
+      "name": "普通用户",
+      "permissions": [
+        "view_data",
+        "export_data",
+        "view_analysis"
+      ]
+    }
+  },
+  "permission_descriptions": {
+    "view_data": "查看数据",
+    "add_data": "添加数据",
+    "edit_data": "编辑数据",
+    "delete_data": "删除数据",
+    "manage_users": "用户管理",
+    "view_logs": "查看日志",
+    "export_data": "导出数据",
+    "view_analysis": "数据分析"
+  }
+}
+
