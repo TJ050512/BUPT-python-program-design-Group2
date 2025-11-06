@@ -1,0 +1,11 @@
+﻿teacher_id,name,password,gender,title,department,email,phone,created_at,updated_at,status,hire_date
+teacher001,卢建军,$2b$12$H4LcLJ0ePFJpmjZqqNRXXOj.QWml5mEOE5RhzH2AiwvO5pDcfD5qW,男,讲师,计算机学院,teacher001@bupt.edu.cn,010-93984169,2025-11-05 15:21:02,2025-11-05 15:21:02,active,
+teacher002,余桂芳,$2b$12$Kfu5F0DurCRUBPi0ackLsOHzKkm7eBSzwoUgRY667A6rpjZCE1Eoq,女,讲师,计算机学院,teacher002@bupt.edu.cn,010-10787372,2025-11-05 15:21:02,2025-11-05 15:21:02,active,
+teacher003,王晨,$2b$12$TYj5EUUaGcZkWEPXHEGoAegmLnPmYVKgYoWW5fHLKPkp2F0oefywG,男,副教授,计算机学院,teacher003@bupt.edu.cn,010-90038245,2025-11-05 15:21:02,2025-11-05 15:21:02,active,
+teacher004,陈颖,$2b$12$LnCg/RxM28AEKhPVus3j8ORzzwT5f51jCm/UanQ1uGjnsTuaAXxJW,女,讲师,计算机学院,teacher004@bupt.edu.cn,010-93257998,2025-11-05 15:21:02,2025-11-05 15:21:02,active,
+teacher005,杨岩,$2b$12$KhOCcJ8jMo1HjBco33GYV.PJgyOrQ58Q16W0VEFWkiLAs4/xuin.K,男,讲师,计算机学院,teacher005@bupt.edu.cn,010-31360735,2025-11-05 15:21:02,2025-11-05 15:21:02,active,
+teacher006,王莹,$2b$12$0gm34rnsDBQhriNdFsR1R.cauqEIufboQgMloFZxrPwWBXQPp8Hv2,女,讲师,计算机学院,teacher006@bupt.edu.cn,010-76438781,2025-11-05 15:21:03,2025-11-05 15:21:03,active,
+teacher007,窦宇,$2b$12$0PJswnRQ0JdSrhZbBENTXOyTMVfGMkjE0F.F5CHKwMpCiboCuTYqK,女,副教授,计算机学院,teacher007@bupt.edu.cn,010-18631257,2025-11-05 15:21:03,2025-11-05 15:21:03,active,
+teacher008,李涛,$2b$12$M4UC5hylLaeT9sBu6Vfa0u98O28qePKtj62FmP1Lb5vvMEzbAgEYO,女,教授,计算机学院,teacher008@bupt.edu.cn,010-26347035,2025-11-05 15:21:03,2025-11-05 15:21:03,active,
+teacher009,张刚,$2b$12$3Q.yAD3YA2SRPuFBeQIO/.iISYrQUZ8o04iK9olZM2IT2jkNh.Oom,男,教授,计算机学院,teacher009@bupt.edu.cn,010-88336601,2025-11-05 15:21:03,2025-11-05 15:21:03,active,
+teacher010,张璐,$2b$12$iyGlBDN32bKz7GAA0WHIpePrcB/fSv3mUzwS9Cs0pQ5SLOlW9tPsC,女,讲师,计算机学院,teacher010@bupt.edu.cn,010-48405952,2025-11-05 15:21:03,2025-11-05 15:21:03,active,
