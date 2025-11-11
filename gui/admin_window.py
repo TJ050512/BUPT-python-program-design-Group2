@@ -1873,15 +1873,27 @@ class AdminWindow:
             name_entry.insert(0, admin.get('name', ''))
             name_entry.pack(side="left", fill="x", expand=True)
             
-            # 密码（可选修改）
+            # 密码（管理员密码不允许修改）
             password_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
             password_frame.pack(fill="x", pady=10)
             ctk.CTkLabel(password_frame, text="密码", font=("Microsoft YaHei UI", 14, "bold"), 
                         text_color=self.BUPT_BLUE, width=100, anchor="w").pack(side="left", padx=(0, 10))
             password_entry = ctk.CTkEntry(password_frame, width=400, height=40, 
                                          font=("Microsoft YaHei UI", 14), 
-                                         placeholder_text="留空则不修改密码", show="●")
+                                         placeholder_text="管理员密码不允许修改",
+                                         state="disabled",
+                                         fg_color="#F0F0F0")
             password_entry.pack(side="left", fill="x", expand=True)
+            
+            # 密码提示
+            password_hint_label = ctk.CTkLabel(
+                content_frame,
+                text="⚠️ 管理员密码不允许修改，如需重置请联系系统管理员",
+                font=("Microsoft YaHei UI", 11),
+                text_color="#FF6B6B",
+                anchor="w"
+            )
+            password_hint_label.pack(fill="x", pady=(0, 10))
             
             # 角色
             role_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
@@ -1947,8 +1959,7 @@ class AdminWindow:
                     messagebox.showwarning("提示", "请输入姓名")
                     return
                 
-                # 准备更新数据
-                from utils.crypto import CryptoUtil
+                # 准备更新数据（管理员密码不允许修改）
                 update_data = {
                     'name': name,
                     'role': role_var.get(),
@@ -1958,10 +1969,7 @@ class AdminWindow:
                     'status': status_var.get()
                 }
                 
-                # 如果密码不为空，则更新密码
-                password = password_entry.get().strip()
-                if password:
-                    update_data['password'] = CryptoUtil.hash_password(password)
+                # 管理员密码不允许修改，不处理密码字段
                 
                 # 更新数据库
                 try:
@@ -3121,6 +3129,15 @@ class AdminWindow:
                     self.manage_course_offerings(course_id, course_name)
                 else:
                     messagebox.showerror("错误", "添加开课计划失败")
+            except ValueError as e:
+                # 教室冲突等验证错误
+                Logger.warning(f"添加开课计划验证失败: {e}")
+                error_msg = str(e)
+                if "教室冲突" in error_msg:
+                    messagebox.showerror("错误", 
+                        f"{error_msg}\n\n请选择不同的教室或调整上课时间")
+                else:
+                    messagebox.showerror("错误", error_msg)
             except Exception as e:
                 Logger.error(f"添加开课计划失败: {e}")
                 messagebox.showerror("错误", f"添加开课计划失败：{str(e)}")
@@ -3333,12 +3350,34 @@ class AdminWindow:
                 # 提取教师ID
                 teacher_id = teacher_selected.split(" - ")[0]
                 
+                # 获取教室和时间信息
+                class_time = time_entry.get().strip() or None
+                classroom = classroom_entry.get().strip() or None
+                
+                # 检查教室冲突（如果有教室和时间信息）
+                if class_time and classroom:
+                    try:
+                        from core.course_manager import CourseManager
+                        course_manager = CourseManager(self.db)
+                        conflict = course_manager.check_classroom_conflict(
+                            semester, class_time, classroom, exclude_offering_id=offering_id
+                        )
+                        if conflict:
+                            messagebox.showerror("错误", 
+                                f"教室冲突：{classroom} 在相同时间段已被 {conflict} 使用\n\n"
+                                "请选择不同的教室或调整上课时间")
+                            return
+                    except Exception as e:
+                        Logger.error(f"检查教室冲突失败: {e}")
+                        messagebox.showerror("错误", f"检查教室冲突失败：{str(e)}")
+                        return
+                
                 # 准备更新数据
                 update_data = {
                     'teacher_id': teacher_id,
                     'semester': semester,
-                    'class_time': time_entry.get().strip() or None,
-                    'classroom': classroom_entry.get().strip() or None,
+                    'class_time': class_time,
+                    'classroom': classroom,
                     'max_students': int(max_students_entry.get().strip()) if max_students_entry.get().strip().isdigit() else 60,
                     'status': status_var.get()
                 }

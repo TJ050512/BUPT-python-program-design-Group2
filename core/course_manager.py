@@ -3,7 +3,8 @@
 负责课程信息管理、开课计划管理
 """
 
-from typing import List, Dict, Optional
+import re
+from typing import List, Dict, Optional, Tuple, Set
 from utils.logger import Logger
 from data.models import Course, CourseOffering
 
@@ -283,6 +284,117 @@ class CourseManager:
             Logger.error(f"删除课程失败: {e}")
             return False
     
+    def check_classroom_conflict(self, semester: str, class_time: str, classroom: str, 
+                                 exclude_offering_id: Optional[int] = None) -> Optional[str]:
+        """
+        检查教室和时间冲突
+        如果同一时间段有其他课程使用相同教室，返回冲突信息
+        
+        Args:
+            semester: 学期
+            class_time: 上课时间字符串（如：周一3-4节，周四3-4节）
+            classroom: 教室
+            exclude_offering_id: 排除的开课计划ID（编辑时使用）
+        
+        Returns:
+            冲突信息字符串，无冲突返回None
+        """
+        if not class_time or not classroom:
+            return None
+        
+        # 解析当前课程的时间段
+        current_time_slots = self._parse_time_slots(class_time)
+        if not current_time_slots:
+            return None
+        
+        # 获取同一学期的所有开课计划
+        sql = """
+            SELECT 
+                co.offering_id,
+                co.class_time,
+                co.classroom,
+                c.course_name,
+                t.name as teacher_name
+            FROM course_offerings co
+            JOIN courses c ON co.course_id = c.course_id
+            JOIN teachers t ON co.teacher_id = t.teacher_id
+            WHERE co.semester = ? AND co.classroom = ?
+        """
+        params = [semester, classroom]
+        
+        if exclude_offering_id:
+            sql += " AND co.offering_id != ?"
+            params.append(exclude_offering_id)
+        
+        existing_offerings = self.db.execute_query(sql, tuple(params))
+        
+        # 检查每个现有开课计划的时间是否与当前课程冲突
+        for offering in existing_offerings:
+            existing_time_slots = self._parse_time_slots(offering.get('class_time', ''))
+            if not existing_time_slots:
+                continue
+            
+            # 检查是否有时间段重叠
+            for current_slot in current_time_slots:
+                for existing_slot in existing_time_slots:
+                    if current_slot == existing_slot:
+                        # 找到冲突
+                        conflict_info = f"{offering.get('course_name', '')}（{offering.get('teacher_name', '')}）"
+                        return conflict_info
+        
+        return None
+    
+    def _parse_time_slots(self, class_time: str) -> Set[Tuple[int, int]]:
+        """
+        解析时间字符串，提取所有时间段
+        
+        Args:
+            class_time: 时间字符串（如：周一3-4节，周四3-4节）
+        
+        Returns:
+            时间段集合，每个元素为(星期, 节次)的元组
+        """
+        time_slots = set()
+        
+        if not class_time:
+            return time_slots
+        
+        # 支持中文逗号、英文逗号、顿号等多种分隔符
+        time_blocks = re.split(r'[，,、]', class_time)
+        
+        # 星期映射
+        weekday_map = {
+            '周一': 1, '周二': 2, '周三': 3, '周四': 4, '周五': 5,
+            '周1': 1, '周2': 2, '周3': 3, '周4': 4, '周5': 5
+        }
+        
+        for block in time_blocks:
+            block = block.strip()
+            if not block:
+                continue
+            
+            # 匹配星期和节次，支持多种格式：
+            # 周一1-2节、周一1-3节、周一 1-2节、周1第1-2节等
+            pattern = r'(周[一二三四五]|周[1-5])\s*(\d+)\s*[-~至]\s*(\d+)\s*[节堂]'
+            match = re.search(pattern, block)
+            
+            if match:
+                weekday_str = match.group(1)
+                start_period = int(match.group(2))
+                end_period = int(match.group(3))
+                
+                # 确保节次在合理范围内（1-12节）
+                if start_period < 1 or end_period > 12 or start_period > end_period:
+                    continue
+                
+                weekday = weekday_map.get(weekday_str)
+                if weekday:
+                    # 将连续节次都添加为时间段
+                    for period in range(start_period, end_period + 1):
+                        time_slots.add((weekday, period))
+        
+        return time_slots
+    
     def add_course_offering(self, offering_data: Dict) -> Optional[int]:
         """
         添加开课计划
@@ -294,9 +406,24 @@ class CourseManager:
             新插入的offering_id，失败返回None
         """
         try:
+            # 检查教室冲突
+            semester = offering_data.get('semester')
+            class_time = offering_data.get('class_time')
+            classroom = offering_data.get('classroom')
+            
+            if semester and class_time and classroom:
+                conflict = self.check_classroom_conflict(semester, class_time, classroom)
+                if conflict:
+                    error_msg = f"教室冲突：{classroom} 在相同时间段已被 {conflict} 使用"
+                    Logger.warning(error_msg)
+                    raise ValueError(error_msg)
+            
             offering_id = self.db.insert_data('course_offerings', offering_data)
             Logger.info(f"添加开课计划成功: {offering_data.get('course_id')}")
             return offering_id
+        except ValueError:
+            # 重新抛出验证错误
+            raise
         except Exception as e:
             Logger.error(f"添加开课计划失败: {e}")
             return None

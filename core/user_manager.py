@@ -157,6 +157,9 @@ class UserManager:
             elif user_type == 'teacher':
                 table_name = 'teachers'
                 id_column = 'teacher_id'
+            elif user_type == 'admin':
+                table_name = 'admins'
+                id_column = 'admin_id'
             else:
                 return False, "不支持的用户类型"
             

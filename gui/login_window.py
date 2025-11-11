@@ -7,6 +7,7 @@ import customtkinter as ctk
 from tkinter import messagebox
 from pathlib import Path
 from PIL import Image
+from typing import Optional, Dict
 from utils.logger import Logger
 from utils.crypto import CryptoUtil
 from data.database import get_database
@@ -252,6 +253,17 @@ class LoginWindow:
             command=self.do_login
         )
         login_button.pack(fill="x", pady=(0, 15))
+        
+        # 忘记密码链接
+        forgot_password_label = ctk.CTkLabel(
+            form_frame,
+            text="忘记密码？",
+            font=("Microsoft YaHei UI", 12),
+            text_color=self.BUPT_BLUE,
+            cursor="hand2"
+        )
+        forgot_password_label.pack(pady=(0, 10))
+        forgot_password_label.bind("<Button-1>", lambda e: self.show_forgot_password_dialog())
         
     def do_login(self):
         """执行登录"""
@@ -569,6 +581,438 @@ class LoginWindow:
         self.password_entry.delete(0, 'end')
         self.root.deiconify()
         Logger.info("用户已注销")
+    
+    def show_forgot_password_dialog(self):
+        """显示忘记密码对话框"""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("找回密码")
+        dialog.geometry("550x650")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # 居中显示
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (550 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (650 // 2)
+        dialog.geometry(f"550x650+{x}+{y}")
+        
+        # 主容器
+        main_frame = ctk.CTkFrame(dialog, fg_color="white")
+        main_frame.pack(fill="both", expand=True)
+        
+        # 标题区域
+        header_frame = ctk.CTkFrame(main_frame, fg_color=self.BUPT_BLUE, height=100)
+        header_frame.pack(fill="x")
+        header_frame.pack_propagate(False)
+        
+        title_label = ctk.CTkLabel(
+            header_frame,
+            text="找回密码",
+            font=("Microsoft YaHei UI", 24, "bold"),
+            text_color="white"
+        )
+        title_label.pack(expand=True)
+        
+        # 内容区域（可滚动）
+        content_frame = ctk.CTkScrollableFrame(main_frame, fg_color="white")
+        content_frame.pack(fill="both", expand=True, padx=30, pady=20)
+        
+        # 步骤提示
+        step_label = ctk.CTkLabel(
+            content_frame,
+            text="请填写以下信息以验证身份",
+            font=("Microsoft YaHei UI", 14),
+            text_color="gray"
+        )
+        step_label.pack(pady=(0, 10))
+        
+        # 管理员提示
+        admin_warning_label = ctk.CTkLabel(
+            content_frame,
+            text="⚠️ 注意：管理员账号不支持密码重置功能",
+            font=("Microsoft YaHei UI", 12),
+            text_color="#FF6B6B"
+        )
+        admin_warning_label.pack(pady=(0, 20))
+        
+        # 用户类型选择
+        type_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        type_frame.pack(fill="x", pady=(0, 20))
+        
+        user_type_var = ctk.StringVar(value="student")
+        
+        student_radio = ctk.CTkRadioButton(
+            type_frame,
+            text="学生",
+            variable=user_type_var,
+            value="student",
+            font=("Microsoft YaHei UI", 14),
+            fg_color=self.BUPT_BLUE
+        )
+        student_radio.pack(side="left", padx=(0, 20))
+        
+        teacher_radio = ctk.CTkRadioButton(
+            type_frame,
+            text="教师",
+            variable=user_type_var,
+            value="teacher",
+            font=("Microsoft YaHei UI", 14),
+            fg_color=self.BUPT_BLUE
+        )
+        teacher_radio.pack(side="left")
+        
+        # 账号输入
+        account_label = ctk.CTkLabel(
+            content_frame,
+            text="账号（学号/工号）*",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE,
+            anchor="w"
+        )
+        account_label.pack(fill="x", pady=(0, 5))
+        
+        account_entry = ctk.CTkEntry(
+            content_frame,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            placeholder_text="请输入学号或工号"
+        )
+        account_entry.pack(fill="x", pady=(0, 15))
+        
+        # 姓名输入
+        name_label = ctk.CTkLabel(
+            content_frame,
+            text="姓名 *",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE,
+            anchor="w"
+        )
+        name_label.pack(fill="x", pady=(0, 5))
+        
+        name_entry = ctk.CTkEntry(
+            content_frame,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            placeholder_text="请输入真实姓名"
+        )
+        name_entry.pack(fill="x", pady=(0, 15))
+        
+        # 手机号码输入
+        phone_label = ctk.CTkLabel(
+            content_frame,
+            text="手机号码 *",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE,
+            anchor="w"
+        )
+        phone_label.pack(fill="x", pady=(0, 5))
+        
+        phone_entry = ctk.CTkEntry(
+            content_frame,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            placeholder_text="请输入注册时填写的手机号码"
+        )
+        phone_entry.pack(fill="x", pady=(0, 15))
+        
+        # 验证码输入区域
+        code_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        code_frame.pack(fill="x", pady=(0, 15))
+        
+        code_label = ctk.CTkLabel(
+            code_frame,
+            text="验证码 *",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE,
+            anchor="w",
+            width=100
+        )
+        code_label.pack(side="left", padx=(0, 10))
+        
+        code_entry = ctk.CTkEntry(
+            code_frame,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            placeholder_text="请输入验证码",
+            width=200
+        )
+        code_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        
+        # 存储验证码
+        verification_code = None
+        code_sent = False
+        
+        def send_verification_code():
+            """发送验证码"""
+            nonlocal verification_code, code_sent
+            
+            account = account_entry.get().strip()
+            name = name_entry.get().strip()
+            phone = phone_entry.get().strip()
+            user_type = user_type_var.get()
+            
+            # 验证必填字段
+            if not account:
+                messagebox.showwarning("提示", "请输入账号")
+                account_entry.focus()
+                return
+            
+            if not name:
+                messagebox.showwarning("提示", "请输入姓名")
+                name_entry.focus()
+                return
+            
+            if not phone:
+                messagebox.showwarning("提示", "请输入手机号码")
+                phone_entry.focus()
+                return
+            
+            # 验证手机号格式
+            if not phone.isdigit() or len(phone) != 11:
+                messagebox.showerror("错误", "手机号码格式不正确，请输入11位数字")
+                phone_entry.focus()
+                return
+            
+            # 检查是否为管理员账号（管理员不支持密码重置）
+            if account.startswith('admin'):
+                messagebox.showerror("错误", "管理员账号不支持密码重置功能\n\n如需重置管理员密码，请联系系统管理员")
+                return
+            
+            # 验证用户信息
+            user_info = self._verify_user_info(account, name, phone, user_type)
+            if not user_info:
+                messagebox.showerror("错误", "账号、姓名或手机号码不匹配，请检查后重试")
+                return
+            
+            # 生成6位数字验证码
+            import random
+            verification_code = str(random.randint(100000, 999999))
+            code_sent = True
+            
+            # 模拟发送短信（实际应用中这里应该调用短信服务API）
+            Logger.info(f"验证码已发送到 {phone}: {verification_code}")
+            
+            # 显示验证码（实际应用中应该通过短信发送，这里为了方便测试显示）
+            messagebox.showinfo("验证码已发送", 
+                f"验证码已发送到手机 {phone}\n\n"
+                f"验证码：{verification_code}\n\n"
+                f"（演示模式：实际应用中验证码将通过短信发送）")
+            
+            send_code_btn.configure(state="disabled", text=f"已发送（{verification_code}）")
+            code_entry.focus()
+        
+        send_code_btn = ctk.CTkButton(
+            code_frame,
+            text="发送验证码",
+            width=120,
+            height=40,
+            font=("Microsoft YaHei UI", 13),
+            fg_color=self.BUPT_LIGHT_BLUE,
+            hover_color=self.BUPT_BLUE,
+            command=send_verification_code
+        )
+        send_code_btn.pack(side="left")
+        
+        # 新密码输入
+        new_password_label = ctk.CTkLabel(
+            content_frame,
+            text="新密码 *",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE,
+            anchor="w"
+        )
+        new_password_label.pack(fill="x", pady=(0, 5))
+        
+        new_password_entry = ctk.CTkEntry(
+            content_frame,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            placeholder_text="请输入新密码（6-20个字符）",
+            show="●"
+        )
+        new_password_entry.pack(fill="x", pady=(0, 15))
+        
+        # 确认密码输入
+        confirm_password_label = ctk.CTkLabel(
+            content_frame,
+            text="确认新密码 *",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE,
+            anchor="w"
+        )
+        confirm_password_label.pack(fill="x", pady=(0, 5))
+        
+        confirm_password_entry = ctk.CTkEntry(
+            content_frame,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            placeholder_text="请再次输入新密码",
+            show="●"
+        )
+        confirm_password_entry.pack(fill="x", pady=(0, 20))
+        
+        # 按钮区域
+        button_frame = ctk.CTkFrame(main_frame, fg_color="white")
+        button_frame.pack(fill="x", padx=30, pady=20)
+        
+        def confirm_reset():
+            """确认重置密码"""
+            nonlocal verification_code, code_sent
+            
+            account = account_entry.get().strip()
+            name = name_entry.get().strip()
+            phone = phone_entry.get().strip()
+            code = code_entry.get().strip()
+            new_password = new_password_entry.get().strip()
+            confirm_password = confirm_password_entry.get().strip()
+            user_type = user_type_var.get()
+            
+            # 验证必填字段
+            if not account or not name or not phone:
+                messagebox.showwarning("提示", "请填写完整的身份信息")
+                return
+            
+            if not code:
+                messagebox.showwarning("提示", "请输入验证码")
+                code_entry.focus()
+                return
+            
+            if not new_password:
+                messagebox.showwarning("提示", "请输入新密码")
+                new_password_entry.focus()
+                return
+            
+            if not confirm_password:
+                messagebox.showwarning("提示", "请确认新密码")
+                confirm_password_entry.focus()
+                return
+            
+            # 验证验证码
+            if not code_sent or code != verification_code:
+                messagebox.showerror("错误", "验证码错误，请重新获取")
+                code_entry.delete(0, 'end')
+                code_entry.focus()
+                return
+            
+            # 验证密码一致性
+            if new_password != confirm_password:
+                messagebox.showerror("错误", "两次输入的密码不一致")
+                new_password_entry.delete(0, 'end')
+                confirm_password_entry.delete(0, 'end')
+                new_password_entry.focus()
+                return
+            
+            # 验证密码格式
+            is_valid, error_msg = Validator.is_valid_password(new_password)
+            if not is_valid:
+                messagebox.showerror("错误", error_msg)
+                new_password_entry.delete(0, 'end')
+                confirm_password_entry.delete(0, 'end')
+                new_password_entry.focus()
+                return
+            
+            # 再次检查是否为管理员账号
+            if account.startswith('admin'):
+                messagebox.showerror("错误", "管理员账号不支持密码重置功能\n\n如需重置管理员密码，请联系系统管理员")
+                return
+            
+            # 再次验证用户信息
+            user_info = self._verify_user_info(account, name, phone, user_type)
+            if not user_info:
+                messagebox.showerror("错误", "身份验证失败，请检查信息后重试")
+                return
+            
+            # 重置密码
+            success, message = self.user_manager.update_password(account, user_type, new_password)
+            
+            if success:
+                Logger.info(f"用户通过忘记密码功能重置密码: {account} ({user_type})")
+                messagebox.showinfo("成功", "密码重置成功！\n\n请使用新密码登录")
+                dialog.destroy()
+            else:
+                messagebox.showerror("错误", message)
+        
+        def cancel_reset():
+            """取消重置"""
+            dialog.destroy()
+        
+        # 确定按钮
+        confirm_btn = ctk.CTkButton(
+            button_frame,
+            text="确认重置",
+            width=180,
+            height=45,
+            font=("Microsoft YaHei UI", 16, "bold"),
+            fg_color=self.BUPT_BLUE,
+            hover_color=self.BUPT_LIGHT_BLUE,
+            command=confirm_reset
+        )
+        confirm_btn.pack(side="right", padx=(10, 0))
+        
+        # 取消按钮
+        cancel_btn = ctk.CTkButton(
+            button_frame,
+            text="取消",
+            width=120,
+            height=45,
+            font=("Microsoft YaHei UI", 16),
+            fg_color="#CCCCCC",
+            hover_color="#BBBBBB",
+            text_color="black",
+            command=cancel_reset
+        )
+        cancel_btn.pack(side="right")
+        
+        # 绑定回车键
+        account_entry.bind('<Return>', lambda e: name_entry.focus())
+        name_entry.bind('<Return>', lambda e: phone_entry.focus())
+        phone_entry.bind('<Return>', lambda e: send_verification_code())
+        code_entry.bind('<Return>', lambda e: new_password_entry.focus())
+        new_password_entry.bind('<Return>', lambda e: confirm_password_entry.focus())
+        confirm_password_entry.bind('<Return>', lambda e: confirm_reset())
+        
+        # 聚焦到账号输入框
+        account_entry.focus()
+    
+    def _verify_user_info(self, account: str, name: str, phone: str, user_type: str) -> Optional[Dict]:
+        """
+        验证用户信息（账号、姓名、手机号是否匹配）
+        
+        Args:
+            account: 账号（学号/工号）
+            name: 姓名
+            phone: 手机号码
+            user_type: 用户类型（student/teacher）
+        
+        Returns:
+            用户信息字典，验证失败返回None
+        """
+        try:
+            if user_type == 'student':
+                sql = """
+                    SELECT student_id, name, phone 
+                    FROM students 
+                    WHERE student_id = ? AND name = ? AND phone = ?
+                """
+            elif user_type == 'teacher':
+                sql = """
+                    SELECT teacher_id, name, phone 
+                    FROM teachers 
+                    WHERE teacher_id = ? AND name = ? AND phone = ?
+                """
+            else:
+                return None
+            
+            result = self.db.execute_query(sql, (account, name, phone))
+            
+            if result and len(result) > 0:
+                return result[0]
+            return None
+            
+        except Exception as e:
+            Logger.error(f"验证用户信息失败: {e}")
+            return None
     
     def on_close(self):
         """关闭窗口"""
