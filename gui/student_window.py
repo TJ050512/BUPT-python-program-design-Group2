@@ -860,7 +860,13 @@ class StudentWindow:
         
         # 鼠标滚轮支持
         def on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            try:
+                # 检查 Canvas 是否还存在
+                if canvas.winfo_exists():
+                    canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except Exception:
+                # Canvas 已被销毁，忽略错误
+                pass
         
         canvas.bind_all("<MouseWheel>", on_mousewheel)
         
