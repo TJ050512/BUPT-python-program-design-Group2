@@ -93,6 +93,22 @@ class Database:
             )
         ''')
         
+        # 2.5. 管理员表
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS admins (
+                admin_id TEXT PRIMARY KEY,        -- 管理员ID
+                name TEXT NOT NULL,               -- 姓名
+                password TEXT NOT NULL,           -- 密码哈希
+                email TEXT,                       -- 邮箱
+                phone TEXT,                       -- 电话
+                role TEXT DEFAULT 'admin',        -- 角色：admin/super_admin
+                department TEXT,                 -- 所属部门
+                status TEXT DEFAULT 'active',    -- 状态：active/inactive
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
         # 3. 课程表
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS courses (
@@ -305,19 +321,52 @@ class Database:
             self.conn.rollback()
             return 0
     
+    def ensure_admin_exists(self):
+        """确保默认管理员账号存在"""
+        from utils.crypto import CryptoUtil
+        
+        # 检查管理员是否存在
+        admin_check = self.execute_query("SELECT * FROM admins WHERE admin_id='admin001'")
+        
+        if not admin_check:
+            Logger.info("创建默认管理员账号...")
+            admin_data = {
+                'admin_id': 'admin001',
+                'name': '系统管理员',
+                'password': CryptoUtil.hash_password('admin123'),
+                'email': 'admin@bupt.edu.cn',
+                'phone': '010-12345000',
+                'role': 'admin',
+                'department': '教务处'
+            }
+            try:
+                self.insert_data('admins', admin_data)
+                Logger.info("默认管理员账号创建成功 (admin001/admin123)")
+            except Exception as e:
+                Logger.error(f"创建管理员账号失败: {e}")
+        else:
+            Logger.info("默认管理员账号已存在")
+    
     def init_demo_data(self):
         """初始化演示数据"""
         from utils.crypto import CryptoUtil
         
         # 检查是否已有数据
         result = self.execute_query("SELECT COUNT(*) as count FROM students")
-        if result and result[0]['count'] > 0:
-            Logger.info("数据库已有数据，跳过初始化演示数据")
-            return
+        has_students = result and result[0]['count'] > 0
         
-        Logger.info("开始初始化演示数据...")
+        if has_students:
+            Logger.info("数据库已有学生数据，跳过学生数据初始化")
+        else:
+            Logger.info("开始初始化演示数据...")
         
-        # 1. 添加教师
+        # 1. 确保管理员账号存在（无论是否有其他数据）
+        self.ensure_admin_exists()
+        
+        if has_students:
+            return  # 如果已有学生数据，只创建管理员后返回
+        
+        # 2. 添加教师
         teachers = [
             {
                 'teacher_id': 'teacher001',
@@ -342,9 +391,12 @@ class Database:
         ]
         
         for teacher in teachers:
-            self.insert_data('teachers', teacher)
+            try:
+                self.insert_data('teachers', teacher)
+            except Exception as e:
+                Logger.warning(f"教师数据可能已存在: {e}")
         
-        # 2. 添加学生
+        # 3. 添加学生
         students = [
             {
                 'student_id': '2021211001',

@@ -427,6 +427,7 @@ class TeacherWindow:
     
     def view_course_students(self, offering_id, course_name):
         """查看课程学生名单（保持兼容性，仍可用于从课程卡片查看）"""
+        Logger.info(f"教师查看学生名单: {self.user.name} ({self.user.id}) - 课程: {course_name} (开课ID: {offering_id})")
         # 如果当前在学生名单页面，直接显示在当前界面
         # 否则保持原来的新窗口方式
         if hasattr(self, 'students_display_container') and hasattr(self, 'students_courses_list'):
@@ -958,6 +959,10 @@ class TeacherWindow:
                 )
                 
                 if success:
+                    # 获取课程信息用于日志
+                    offering_info = self.course_manager.get_offering_by_id(offering_id)
+                    course_name = offering_info['course_name'] if offering_info else "未知课程"
+                    Logger.info(f"教师录入成绩: {self.user.name} ({self.user.id}) - 学生: {student_name} ({student_id}) - 课程: {course_name} - 成绩: {score}分")
                     dialog.destroy()
                     messagebox.showinfo("成功", f"成绩录入成功！\n{student_name}：{score}分")
                     # 刷新当前界面
@@ -966,6 +971,7 @@ class TeacherWindow:
                     else:
                         self.show_grade_input(offering_id, "")
                 else:
+                    Logger.warning(f"教师录入成绩失败: {self.user.name} ({self.user.id}) - 学生: {student_name} ({student_id}) - {message}")
                     messagebox.showerror("失败", message)
                     
             except ValueError:
@@ -1014,6 +1020,8 @@ class TeacherWindow:
         """显示学生名单（所有授课课程）"""
         self.set_active_menu(2)
         self.clear_content()
+        
+        Logger.info(f"教师查看学生名单页面: {self.user.name} ({self.user.id})")
         
         title = ctk.CTkLabel(
             self.content_frame,

@@ -328,9 +328,14 @@ class StudentWindow:
         if messagebox.askyesno("确认退课", f"确定要退选【{values[1]}】吗？"):
             success, message = self.enrollment_manager.drop_course(self.user.id, offering_id)
             if success:
+                # 获取课程信息用于日志
+                offering_info = self.course_manager.get_offering_by_id(offering_id)
+                course_name = offering_info['course_name'] if offering_info else values[1]
+                Logger.info(f"学生退课: {self.user.name} ({self.user.id}) - 课程: {course_name} (开课ID: {offering_id})")
                 messagebox.showinfo("成功", message)
                 self.show_my_courses()  # 刷新
             else:
+                Logger.warning(f"学生退课失败: {self.user.name} ({self.user.id}) - {message}")
                 messagebox.showerror("失败", message)
     
     def show_course_selection(self):
@@ -498,9 +503,14 @@ class StudentWindow:
                 self.user.id, offering_id, self.current_semester
             )
             if success:
+                # 获取课程信息用于日志
+                offering_info = self.course_manager.get_offering_by_id(offering_id)
+                course_name = offering_info['course_name'] if offering_info else values[1]
+                Logger.info(f"学生选课: {self.user.name} ({self.user.id}) - 课程: {course_name} (开课ID: {offering_id}, 学期: {self.current_semester})")
                 messagebox.showinfo("成功", message)
                 self.show_course_selection()  # 刷新
             else:
+                Logger.warning(f"学生选课失败: {self.user.name} ({self.user.id}) - {message}")
                 messagebox.showerror("失败", message)
     
     def search_courses(self, keyword):
@@ -558,6 +568,8 @@ class StudentWindow:
         """显示我的成绩"""
         self.set_active_menu(2)
         self.clear_content()
+        
+        Logger.info(f"学生查看成绩: {self.user.name} ({self.user.id})")
         
         # 标题
         title = ctk.CTkLabel(
@@ -659,6 +671,8 @@ class StudentWindow:
         """显示我的课表"""
         self.set_active_menu(3)
         self.clear_content()
+        
+        Logger.info(f"学生查看课表: {self.user.name} ({self.user.id})")
         
         # 标题
         title = ctk.CTkLabel(

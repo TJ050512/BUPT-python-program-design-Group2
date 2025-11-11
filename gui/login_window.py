@@ -11,6 +11,7 @@ from utils.logger import Logger
 from utils.crypto import CryptoUtil
 from data.database import get_database
 from core.user_manager import UserManager
+from utils.validator import Validator
 
 
 class LoginWindow:
@@ -151,7 +152,7 @@ class LoginWindow:
         
         login_subtitle = ctk.CTkLabel(
             form_frame,
-            text="请输入您的学号/工号和密码",
+            text="请输入您的账号和密码",
             font=("Microsoft YaHei UI", 13),
             text_color="gray"
         )
@@ -172,7 +173,7 @@ class LoginWindow:
             fg_color=self.BUPT_BLUE,
             hover_color=self.BUPT_LIGHT_BLUE
         )
-        student_radio.pack(side="left", padx=(0, 30))
+        student_radio.pack(side="left", padx=(0, 20))
         
         teacher_radio = ctk.CTkRadioButton(
             type_frame,
@@ -183,7 +184,18 @@ class LoginWindow:
             fg_color=self.BUPT_BLUE,
             hover_color=self.BUPT_LIGHT_BLUE
         )
-        teacher_radio.pack(side="left")
+        teacher_radio.pack(side="left", padx=(0, 20))
+        
+        admin_radio = ctk.CTkRadioButton(
+            type_frame,
+            text="管理员",
+            variable=self.user_type_var,
+            value="admin",
+            font=("Microsoft YaHei UI", 14),
+            fg_color=self.BUPT_BLUE,
+            hover_color=self.BUPT_LIGHT_BLUE
+        )
+        admin_radio.pack(side="left")
         
         # 用户名输入
         username_label = ctk.CTkLabel(
@@ -199,7 +211,7 @@ class LoginWindow:
             form_frame,
             height=45,
             font=("Microsoft YaHei UI", 14),
-            placeholder_text="请输入学号或工号",
+            placeholder_text="请输入账号（学号/工号/管理员ID）",
             border_color=self.BUPT_BLUE,
             fg_color="white"
         )
@@ -255,11 +267,21 @@ class LoginWindow:
         self.root.update()
         
         try:
+            # 获取用户类型
+            user_type = self.user_type_var.get()
+            
             # 调用用户管理器登录
-            success, user, message = self.user_manager.login(username, password)
+            success, user, message = self.user_manager.login(username, password, user_type)
             
             if success:
                 Logger.info(f"用户登录成功: {user.name} ({user.user_type})")
+                
+                # 检查是否为默认密码（仅学生和教师）
+                if (user.is_student() or user.is_teacher()) and \
+                   self.user_manager.is_default_password(password, user.user_type):
+                    # 显示修改密码提醒对话框（非强制）
+                    self.show_change_password_dialog(user, password)
+                    # 无论用户选择修改还是跳过，都允许登录
                 
                 # 关闭登录窗口
                 self.root.withdraw()
@@ -267,6 +289,8 @@ class LoginWindow:
                 # 根据用户类型打开对应的主窗口
                 if user.is_student():
                     self.open_student_window(user)
+                elif user.is_admin():
+                    self.open_admin_window(user)
                 else:
                     self.open_teacher_window(user)
             else:
@@ -307,6 +331,237 @@ class LoginWindow:
             Logger.error(f"打开教师窗口失败: {e}")
             messagebox.showerror("错误", "打开教师窗口失败")
             self.root.deiconify()
+    
+    def open_admin_window(self, user):
+        """打开管理员端主窗口"""
+        try:
+            from gui.admin_window import AdminWindow
+            
+            # 创建新窗口
+            admin_win = ctk.CTkToplevel(self.root)
+            AdminWindow(admin_win, user, self.db, self.on_logout)
+            
+        except Exception as e:
+            Logger.error(f"打开管理员窗口失败: {e}")
+            messagebox.showerror("错误", "打开管理员窗口失败")
+            self.root.deiconify()
+    
+    def show_change_password_dialog(self, user, current_password):
+        """显示修改密码提醒对话框（非强制）"""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("安全提醒")
+        dialog.geometry("500x500")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # 居中显示
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (500 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (500 // 2)
+        dialog.geometry(f"500x500+{x}+{y}")
+        
+        # 主容器
+        main_frame = ctk.CTkFrame(dialog, fg_color="white")
+        main_frame.pack(fill="both", expand=True)
+        
+        # 标题区域
+        header_frame = ctk.CTkFrame(main_frame, fg_color="#FFA500", height=100)
+        header_frame.pack(fill="x")
+        header_frame.pack_propagate(False)
+        
+        title_label = ctk.CTkLabel(
+            header_frame,
+            text="⚠️ 安全提醒",
+            font=("Microsoft YaHei UI", 24, "bold"),
+            text_color="white"
+        )
+        title_label.pack(expand=True)
+        
+        # 内容区域
+        content_frame = ctk.CTkFrame(main_frame, fg_color="white")
+        content_frame.pack(fill="both", expand=True, padx=30, pady=30)
+        
+        # 提示信息
+        warning_label = ctk.CTkLabel(
+            content_frame,
+            text="检测到您正在使用默认密码，为了账户安全，\n建议您修改密码！",
+            font=("Microsoft YaHei UI", 14),
+            text_color="#FF8C00",
+            justify="center"
+        )
+        warning_label.pack(pady=(0, 20))
+        
+        # 用户信息
+        user_info_label = ctk.CTkLabel(
+            content_frame,
+            text=f"用户：{user.name} ({user.id})",
+            font=("Microsoft YaHei UI", 12),
+            text_color="#666666"
+        )
+        user_info_label.pack(pady=(0, 30))
+        
+        # 新密码输入
+        new_password_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        new_password_frame.pack(fill="x", pady=10)
+        
+        new_password_label = ctk.CTkLabel(
+            new_password_frame,
+            text="新密码：",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE,
+            width=100,
+            anchor="w"
+        )
+        new_password_label.pack(side="left", padx=(0, 10))
+        
+        new_password_entry = ctk.CTkEntry(
+            new_password_frame,
+            width=300,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            placeholder_text="请输入新密码（6-20个字符）",
+            show="●"
+        )
+        new_password_entry.pack(side="left", fill="x", expand=True)
+        
+        # 确认密码输入
+        confirm_password_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        confirm_password_frame.pack(fill="x", pady=10)
+        
+        confirm_password_label = ctk.CTkLabel(
+            confirm_password_frame,
+            text="确认密码：",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE,
+            width=100,
+            anchor="w"
+        )
+        confirm_password_label.pack(side="left", padx=(0, 10))
+        
+        confirm_password_entry = ctk.CTkEntry(
+            confirm_password_frame,
+            width=300,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            placeholder_text="请再次输入新密码",
+            show="●"
+        )
+        confirm_password_entry.pack(side="left", fill="x", expand=True)
+        
+        # 密码要求提示
+        password_hint = ctk.CTkLabel(
+            content_frame,
+            text="密码要求：6-20个字符，建议包含字母和数字",
+            font=("Microsoft YaHei UI", 11),
+            text_color="#999999"
+        )
+        password_hint.pack(pady=(10, 30))
+        
+        def confirm_change():
+            new_password = new_password_entry.get().strip()
+            confirm_password = confirm_password_entry.get().strip()
+            
+            # 验证输入
+            if not new_password:
+                messagebox.showwarning("提示", "请输入新密码")
+                new_password_entry.focus()
+                return
+            
+            if not confirm_password:
+                messagebox.showwarning("提示", "请确认新密码")
+                confirm_password_entry.focus()
+                return
+            
+            if new_password != confirm_password:
+                messagebox.showerror("错误", "两次输入的密码不一致，请重新输入")
+                new_password_entry.delete(0, 'end')
+                confirm_password_entry.delete(0, 'end')
+                new_password_entry.focus()
+                return
+            
+            # 验证密码格式
+            is_valid, error_msg = Validator.is_valid_password(new_password)
+            if not is_valid:
+                messagebox.showerror("错误", error_msg)
+                new_password_entry.delete(0, 'end')
+                confirm_password_entry.delete(0, 'end')
+                new_password_entry.focus()
+                return
+            
+            # 检查是否仍为默认密码
+            if self.user_manager.is_default_password(new_password, user.user_type):
+                messagebox.showerror("错误", "新密码不能与默认密码相同，请设置其他密码")
+                new_password_entry.delete(0, 'end')
+                confirm_password_entry.delete(0, 'end')
+                new_password_entry.focus()
+                return
+            
+            # 更新密码
+            success, message = self.user_manager.update_password(
+                user.id, user.user_type, new_password
+            )
+            
+            if success:
+                Logger.info(f"用户修改密码成功: {user.name} ({user.id})")
+                messagebox.showinfo("成功", "密码修改成功！")
+                dialog.destroy()
+            else:
+                messagebox.showerror("错误", message)
+        
+        def skip_change():
+            """跳过修改密码"""
+            dialog.destroy()
+        
+        # 按钮区域
+        button_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        button_frame.pack(fill="x", pady=(20, 0))
+        
+        confirm_btn = ctk.CTkButton(
+            button_frame,
+            text="确认修改",
+            width=130,
+            height=45,
+            font=("Microsoft YaHei UI", 16, "bold"),
+            fg_color=self.BUPT_BLUE,
+            hover_color=self.BUPT_LIGHT_BLUE,
+            command=confirm_change
+        )
+        confirm_btn.pack(side="left", padx=(0, 10))
+        
+        skip_btn = ctk.CTkButton(
+            button_frame,
+            text="下次再修改",
+            width=130,
+            height=45,
+            font=("Microsoft YaHei UI", 16),
+            fg_color="#6C757D",
+            hover_color="#5A6268",
+            command=skip_change
+        )
+        skip_btn.pack(side="left", padx=(0, 10))
+        
+        cancel_btn = ctk.CTkButton(
+            button_frame,
+            text="取消",
+            width=100,
+            height=45,
+            font=("Microsoft YaHei UI", 16),
+            fg_color="#6C757D",
+            hover_color="#5A6268",
+            command=skip_change
+        )
+        cancel_btn.pack(side="left")
+        
+        # 绑定回车键
+        new_password_entry.bind('<Return>', lambda e: confirm_password_entry.focus())
+        confirm_password_entry.bind('<Return>', lambda e: confirm_change())
+        
+        # 聚焦到新密码输入框
+        new_password_entry.focus()
+        
+        # 等待对话框关闭
+        dialog.wait_window()
     
     def on_logout(self):
         """注销回调"""
