@@ -1,6 +1,8 @@
 """
-数据库模块 - 北京邮电大学教学管理系统
-负责数据库的创建、连接和基本操作
+数据库模块 - BUPT 教学管理系统（重构）
+- 新增学院/专业/教室/节次/关系表
+- 学号/工号/学院编号格式校验（SQLite GLOB/CHECK）
+- 公选课仅晚间、跨专业名额限制的触发器
 """
 
 import sqlite3
@@ -53,28 +55,31 @@ class Database:
             Logger.info("数据库连接已关闭")
     
     def init_tables(self):
-        """初始化数据库表结构"""
-        
+        """初始化数据库表结构（增强版，保留原有字段 + 新增学院/专业/教室/节次/触发器）"""
+
+        # === 原有基础表（完全保留） ===
+
         # 1. 学生表
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS students (
-                student_id TEXT PRIMARY KEY,      -- 学号（10位）
-                name TEXT NOT NULL,               -- 姓名
-                password TEXT NOT NULL,           -- 密码哈希
-                gender TEXT,                      -- 性别
-                birth_date TEXT,                  -- 出生日期
-                major TEXT,                       -- 专业
-                grade INTEGER,                    -- 年级
-                class_name TEXT,                  -- 班级
-                enrollment_date TEXT,             -- 入学日期
-                status TEXT DEFAULT 'active',     -- 学籍状态：active/suspended/graduated
-                email TEXT,                       -- 邮箱
-                phone TEXT,                       -- 电话
+                student_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                password TEXT NOT NULL,
+                batch_no INTEGER,
+                gender TEXT,
+                birth_date TEXT,
+                major TEXT,
+                grade INTEGER,
+                class_name TEXT,
+                enrollment_date TEXT,
+                status TEXT DEFAULT 'active',
+                email TEXT,
+                phone TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
+
         # 2. 教师表
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS teachers (
@@ -82,7 +87,9 @@ class Database:
                 name TEXT NOT NULL,               -- 姓名
                 password TEXT NOT NULL,           -- 密码哈希
                 gender TEXT,                      -- 性别
-                title TEXT,                       -- 职称：教授/副教授/讲师
+                title TEXT,                       -- 职称：教授/副教授/讲师/助教/研究员...
+                job_type TEXT,                    -- 岗位类型：教学科研岗/实验岗/管理岗/辅导员
+                hire_level TEXT,                  -- 职级：正高级/副高级/中级/初级
                 department TEXT,                  -- 所属院系
                 email TEXT,                       -- 邮箱
                 phone TEXT,                       -- 电话
@@ -92,86 +99,245 @@ class Database:
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
-        # 2.5. 管理员表
+
+        # 2.5 管理员表
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS admins (
-                admin_id TEXT PRIMARY KEY,        -- 管理员ID
-                name TEXT NOT NULL,               -- 姓名
-                password TEXT NOT NULL,           -- 密码哈希
-                email TEXT,                       -- 邮箱
-                phone TEXT,                       -- 电话
-                role TEXT DEFAULT 'admin',        -- 角色：admin/super_admin
-                department TEXT,                 -- 所属部门
-                status TEXT DEFAULT 'active',    -- 状态：active/inactive
+                admin_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                password TEXT NOT NULL,
+                email TEXT,
+                phone TEXT,
+                role TEXT DEFAULT 'admin',
+                department TEXT,
+                status TEXT DEFAULT 'active',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
+
         # 3. 课程表
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS courses (
-                course_id TEXT PRIMARY KEY,       -- 课程代码
-                course_name TEXT NOT NULL,        -- 课程名称
-                credits REAL NOT NULL,            -- 学分
-                hours INTEGER,                    -- 学时
-                course_type TEXT,                 -- 课程类型：必修/选修/通识
-                department TEXT,                  -- 开课院系
-                description TEXT,                 -- 课程描述
-                prerequisite TEXT,                -- 先修课程
-                max_students INTEGER DEFAULT 60,  -- 最大选课人数
+                course_id TEXT PRIMARY KEY,
+                course_name TEXT NOT NULL,
+                credits REAL NOT NULL,
+                hours INTEGER,
+                course_type TEXT,
+                department TEXT,
+                description TEXT,
+                prerequisite TEXT,
+                max_students INTEGER DEFAULT 60,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                is_public_elective INTEGER DEFAULT 0   -- 是否公选课
             )
         ''')
-        
-        # 4. 开课计划表（课程实例）
+
+        # 4. 开课计划表
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS course_offerings (
                 offering_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                course_id TEXT NOT NULL,          -- 课程代码
-                teacher_id TEXT NOT NULL,         -- 授课教师
-                semester TEXT NOT NULL,           -- 学期：2024-2025-1
-                class_time TEXT,                  -- 上课时间：周一1-2节
-                classroom TEXT,                   -- 教室
-                current_students INTEGER DEFAULT 0, -- 当前选课人数
-                max_students INTEGER DEFAULT 60,  -- 最大人数
-                status TEXT DEFAULT 'open',       -- 状态：open/closed/full
+                course_id TEXT NOT NULL,
+                teacher_id TEXT NOT NULL,
+                semester TEXT NOT NULL,
+                class_time TEXT,
+                classroom TEXT,
+                current_students INTEGER DEFAULT 0,
+                max_students INTEGER DEFAULT 60,
+                status TEXT DEFAULT 'open',
+                classroom_id INTEGER,
+                is_cross_major_open INTEGER DEFAULT 1,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (course_id) REFERENCES courses(course_id),
                 FOREIGN KEY (teacher_id) REFERENCES teachers(teacher_id)
             )
         ''')
-        
-        # 5. 选课表
+
+        # === 新增学院/专业结构 ===
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS colleges (
+                college_code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                CHECK (length(college_code)=7 AND college_code GLOB '202[1-5][0-9][0-9][0-9]')
+            )
+        ''')
+
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS majors (
+                major_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                college_code TEXT NOT NULL,
+                name TEXT NOT NULL,
+                code TEXT UNIQUE,
+                FOREIGN KEY (college_code) REFERENCES colleges(college_code) ON DELETE CASCADE
+            )
+        ''')
+
+        # 学生外键字段（只在不存在时添加）
+        try:
+            self.cursor.execute("ALTER TABLE students ADD COLUMN college_code TEXT;")
+        except Exception:
+            pass
+        try:
+            self.cursor.execute("ALTER TABLE students ADD COLUMN major_id INTEGER;")
+        except Exception:
+            pass
+
+        # === 校验触发器 ===
+        self.cursor.executescript('''
+            CREATE TABLE IF NOT EXISTS _students_fmt_guard(
+                student_id TEXT PRIMARY KEY,
+                CHECK (
+                    length(student_id)=10
+                    AND student_id GLOB '20[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+                )
+            );
+
+            CREATE TRIGGER IF NOT EXISTS trg_students_format_ai
+            AFTER INSERT ON students
+            WHEN NEW.student_id IS NOT NULL
+            BEGIN
+                INSERT OR REPLACE INTO _students_fmt_guard(student_id) VALUES (NEW.student_id);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_students_college_match_bi
+            BEFORE INSERT ON students
+            WHEN NEW.college_code IS NOT NULL
+            BEGIN
+                SELECT
+                    CASE
+                        WHEN substr(NEW.student_id,5,3) <> NEW.college_code
+                        THEN RAISE(ABORT, '学生学号与学院专业编码不匹配（yyy部分应等于college_code）')
+                    END;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_students_college_match_bu
+            BEFORE UPDATE OF student_id, college_code ON students
+            BEGIN
+                SELECT
+                    CASE WHEN NEW.college_code IS NOT NULL
+                        AND substr(NEW.student_id,1,7) <> NEW.college_code
+                    THEN RAISE(ABORT, '学生学号与学院编号不匹配')
+                END;
+            END;
+        ''')
+
+        # === 教师工号格式校验 ===
+        self.cursor.executescript('''
+            CREATE TABLE IF NOT EXISTS _teachers_fmt_guard(
+                teacher_id TEXT PRIMARY KEY,
+                CHECK (length(teacher_id)=10 AND teacher_id GLOB '20[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]')
+            );
+
+            CREATE TRIGGER IF NOT EXISTS trg_teachers_format_ai
+            AFTER INSERT ON teachers
+            WHEN NEW.teacher_id IS NOT NULL
+            BEGIN
+                INSERT OR REPLACE INTO _teachers_fmt_guard(teacher_id) VALUES (NEW.teacher_id);
+            END;
+        ''')
+
+        # === 教室表 ===
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS classrooms (
+                classroom_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                location_type TEXT NOT NULL,
+                seat_count INTEGER NOT NULL,
+                room_type TEXT NOT NULL,
+                UNIQUE(name),
+                CHECK (location_type IN ('1','2','3','4','主','体育馆','体育场')),
+                CHECK (seat_count IN (32,64,128)),
+                CHECK (room_type IN ('普通教室','互动研讨教室','智慧教室','会议室','体育馆','体育场'))
+            )
+        ''')
+
+        # === 节次表 ===
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS time_slots (
+                slot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day_of_week INTEGER NOT NULL,
+                section_no INTEGER NOT NULL,
+                starts_at TEXT NOT NULL,
+                ends_at TEXT NOT NULL,
+                session TEXT NOT NULL,
+                CHECK (day_of_week BETWEEN 1 AND 7),
+                CHECK (session IN ('AM','PM','EVENING'))
+            )
+        ''')
+
+        # === 教师-专业-课程关系表 ===
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS teacher_major_course (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                teacher_id TEXT NOT NULL,
+                major_id INTEGER,
+                course_id TEXT NOT NULL,
+                role TEXT DEFAULT '讲授',
+                FOREIGN KEY (teacher_id) REFERENCES teachers(teacher_id),
+                FOREIGN KEY (major_id) REFERENCES majors(major_id),
+                FOREIGN KEY (course_id) REFERENCES courses(course_id)
+            )
+        ''')
+
+        # === 培养方案表 ===
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS program_courses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                major_id INTEGER NOT NULL,
+                course_id TEXT NOT NULL,
+                course_category TEXT NOT NULL,
+                cross_major_quota INTEGER DEFAULT 0,
+                grade_recommendation INTEGER,
+                UNIQUE(major_id, course_id),
+                CHECK (course_category IN ('必修','选修','公选')),
+                FOREIGN KEY (major_id) REFERENCES majors(major_id),
+                FOREIGN KEY (course_id) REFERENCES courses(course_id)
+            )
+        ''')
+
+        # === 开课节次表 ===
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS offering_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                offering_id INTEGER NOT NULL,
+                slot_id INTEGER NOT NULL,
+                classroom_id INTEGER NOT NULL,
+                FOREIGN KEY (offering_id) REFERENCES course_offerings(offering_id) ON DELETE CASCADE,
+                FOREIGN KEY (slot_id) REFERENCES time_slots(slot_id),
+                FOREIGN KEY (classroom_id) REFERENCES classrooms(classroom_id),
+                UNIQUE (offering_id, slot_id)
+            )
+        ''')
+
+        # === 选课表（保留原字段） ===
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS enrollments (
                 enrollment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                student_id TEXT NOT NULL,         -- 学号
-                offering_id INTEGER NOT NULL,     -- 开课计划ID
-                semester TEXT NOT NULL,           -- 学期
+                student_id TEXT NOT NULL,
+                offering_id INTEGER NOT NULL,
+                semester TEXT NOT NULL,
                 enrollment_date TEXT DEFAULT CURRENT_TIMESTAMP,
-                status TEXT DEFAULT 'enrolled',   -- 状态：enrolled/dropped/completed
+                status TEXT DEFAULT 'enrolled',
                 FOREIGN KEY (student_id) REFERENCES students(student_id),
                 FOREIGN KEY (offering_id) REFERENCES course_offerings(offering_id),
-                UNIQUE(student_id, offering_id)   -- 防止重复选课
+                UNIQUE(student_id, offering_id)
             )
         ''')
-        
-        # 6. 成绩表
+
+        # === 成绩表（保留原字段） ===
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS grades (
                 grade_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                enrollment_id INTEGER NOT NULL,   -- 选课记录ID
-                student_id TEXT NOT NULL,         -- 学号
-                offering_id INTEGER NOT NULL,     -- 开课计划ID
-                score REAL,                       -- 成绩（0-100）
-                grade_level TEXT,                 -- 等级：A/B/C/D/F
-                gpa REAL,                         -- 绩点（4.0制）
-                exam_type TEXT DEFAULT 'final',   -- 考试类型：midterm/final/makeup
-                remarks TEXT,                     -- 备注
-                input_by TEXT,                    -- 录入教师
+                enrollment_id INTEGER NOT NULL,
+                student_id TEXT NOT NULL,
+                offering_id INTEGER NOT NULL,
+                score REAL,
+                grade_level TEXT,
+                gpa REAL,
+                exam_type TEXT DEFAULT 'final',
+                remarks TEXT,
+                input_by TEXT,
                 input_date TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (enrollment_id) REFERENCES enrollments(enrollment_id),
@@ -179,24 +345,124 @@ class Database:
                 FOREIGN KEY (offering_id) REFERENCES course_offerings(offering_id)
             )
         ''')
-        
-        # 7. 系统日志表
+
+        # === 系统日志表 ===
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS system_logs (
                 log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,            -- 用户ID（学号或工号）
-                user_type TEXT NOT NULL,          -- 用户类型：student/teacher
-                action TEXT NOT NULL,             -- 操作类型
-                target TEXT,                      -- 操作目标
-                details TEXT,                     -- 详细信息
-                ip_address TEXT,                  -- IP地址
-                status TEXT,                      -- 状态：success/failed
+                user_id TEXT NOT NULL,
+                user_type TEXT NOT NULL,
+                action TEXT NOT NULL,
+                target TEXT,
+                details TEXT,
+                ip_address TEXT,
+                status TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
+
+        # === 触发器（公选课仅晚间 & 跨专业限额） ===
+        self.cursor.executescript('''
+            CREATE TRIGGER IF NOT EXISTS trg_public_only_evening_bi
+            BEFORE INSERT ON offering_sessions
+            BEGIN
+            SELECT
+            CASE
+                WHEN (SELECT is_public_elective FROM courses c
+                    JOIN course_offerings o ON o.course_id=c.course_id
+                    WHERE o.offering_id=NEW.offering_id)=1
+                AND (SELECT session FROM time_slots WHERE slot_id=NEW.slot_id) <> 'EVENING'
+                THEN RAISE(ABORT,'公选课必须安排在晚间节次(19:20~20:55)')
+            END;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_cross_major_quota_bi
+            BEFORE INSERT ON enrollments
+            BEGIN
+                SELECT
+                CASE
+                    WHEN EXISTS (
+                        SELECT 1
+                        FROM program_courses pc
+                        JOIN course_offerings o ON o.course_id = pc.course_id
+                        JOIN students s ON s.student_id = NEW.student_id
+                        WHERE o.offering_id = NEW.offering_id
+                            AND pc.course_category IN ('必修','选修')
+                            AND s.major_id IS NOT NULL
+                            AND s.major_id <> pc.major_id
+                    )
+                    THEN
+                    CASE
+                        WHEN (
+                            SELECT pcx.cross_major_quota - (
+                                SELECT COUNT(*)
+                                FROM enrollments e
+                                JOIN students sx ON sx.student_id = e.student_id
+                                WHERE e.offering_id = NEW.offering_id
+                                AND sx.major_id IS NOT NULL
+                                AND sx.major_id <> (
+                                    SELECT pc2.major_id
+                                    FROM program_courses pc2
+                                    JOIN course_offerings o2 ON o2.course_id=pc2.course_id
+                                    WHERE o2.offering_id=NEW.offering_id
+                                    LIMIT 1
+                                )
+                            )
+                            FROM program_courses pcx
+                            JOIN course_offerings ox ON ox.course_id = pcx.course_id
+                            WHERE ox.offering_id = NEW.offering_id
+                            LIMIT 1
+                        ) <= 0
+                        THEN RAISE(ABORT,'跨专业名额已满')
+                    END
+                END;
+            END;
+        ''')
+
+        # ====== 兼容性追加字段（已存在则跳过） ======
+        # 学生表：入学方式 / 学制（年）
+        for sql in [
+            "ALTER TABLE students ADD COLUMN admission_type TEXT",  # 保送/统招/推免/交换/留学生等
+            "ALTER TABLE students ADD COLUMN program_years INTEGER" # 2/3/4/5 年等
+        ]:
+            try: self.cursor.execute(sql)
+            except Exception: pass
+
+        # 课程表：公选标记已存在；再加 credit_type（学位课/任选/通识等）
+        try: self.cursor.execute("ALTER TABLE courses ADD COLUMN credit_type TEXT")
+        except Exception: pass
+
+        # 教师-课程关系表：主讲标记
+        try: self.cursor.execute("ALTER TABLE teacher_major_course ADD COLUMN main_teacher INTEGER DEFAULT 1")
+        except Exception: pass
+
+        # 教室表：设备信息（JSON 或 TEXT）
+        try: self.cursor.execute("ALTER TABLE classrooms ADD COLUMN available_equipment TEXT")
+        except Exception: pass
+
+        # 成绩表：补考/重修轮次
+        for sql in [
+            "ALTER TABLE grades ADD COLUMN is_makeup INTEGER DEFAULT 0",
+            "ALTER TABLE grades ADD COLUMN exam_round INTEGER"      # 1=初考,2=补考,3=重修...
+        ]:
+            try: self.cursor.execute(sql)
+            except Exception: pass
+
+        # 学院表：院长姓名
+        try: self.cursor.execute("ALTER TABLE colleges ADD COLUMN dean_name TEXT")
+        except Exception: pass
+
+        # 日志表：设备/系统/浏览器
+        for sql in [
+            "ALTER TABLE system_logs ADD COLUMN device TEXT",
+            "ALTER TABLE system_logs ADD COLUMN os TEXT",
+            "ALTER TABLE system_logs ADD COLUMN browser TEXT"
+        ]:
+            try: self.cursor.execute(sql)
+            except Exception: pass
         self.conn.commit()
-        Logger.info("数据表初始化完成")
+        Logger.info("✅ 数据表结构初始化完成（保留原信息 + 增强学院/专业/教室/节次）")
+
     
     def execute_query(self, sql: str, params: tuple = None) -> List[Dict]:
         """
@@ -371,7 +637,7 @@ class Database:
             {
                 'teacher_id': 'teacher001',
                 'name': '张教授',
-                'password': CryptoUtil.hash_password('teacher123'),
+                'password': CryptoUtil.hash_password('2001234567'),
                 'gender': '男',
                 'title': '教授',
                 'department': '计算机学院',
@@ -381,7 +647,7 @@ class Database:
             {
                 'teacher_id': 'teacher002',
                 'name': '李副教授',
-                'password': CryptoUtil.hash_password('teacher123'),
+                'password': CryptoUtil.hash_password('2019876543'),
                 'gender': '女',
                 'title': '副教授',
                 'department': '计算机学院',

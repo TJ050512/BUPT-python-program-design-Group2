@@ -18,94 +18,43 @@ try:
     from utils.config_manager import Config  # type: ignore
 except Exception:
     Config = None  # type: ignore
+    
+from models import Student, Teacher, Course, CourseOffering, Enrollment, Grade
 
 class _DBAdapter:
     """内部适配器：屏蔽不同数据库实现差异"""
     def __init__(self, db_path: str):
         self._impl = None
-        # 优先尝试队友的 database_module.DatabaseManager
+        from data.database import Database, get_database  # type: ignore
+        # 尝试使用单例 get_database if provided
         try:
-            from database_module import DatabaseManager  # type: ignore
-            cfg = {'type': 'sqlite', 'path': str(db_path)}
-            self._impl = DatabaseManager(cfg)
-            self._mode = 'database_module'
-            Logger.info("DatabaseInterface: 使用 database_module.DatabaseManager")
+            self._impl = get_database()  # type: ignore
+            self._mode = 'data.database.single'
         except Exception:
-            try:
-                # 回退到项目内的 data.database
-                from data.database import Database, get_database  # type: ignore
-                # 尝试使用单例 get_database if provided
-                try:
-                    self._impl = get_database()  # type: ignore
-                    self._mode = 'data.database.single'
-                except Exception:
-                    self._impl = Database(str(db_path))
-                    self._mode = 'data.database'
-                Logger.info("DatabaseInterface: 回退使用 data.database")
-            except Exception as e:
-                Logger.error("DatabaseInterface: 无法找到可用的数据库实现", exc_info=True)
-                raise
+            self._impl = Database(str(db_path)) #
+            self._mode = 'data.database'
+        Logger.info("DatabaseInterface: 回退使用 data.database")
 
     # 统一方法名：query 返回 list[dict], execute 返回受影响行数, insert 返回新 id 或 None
     def query(self, sql: str, params: Tuple = None) -> List[Dict]:
-        if self._mode == 'database_module':
-            if hasattr(self._impl, 'query'):
-                return self._impl.query(sql, params)
-            if hasattr(self._impl, 'execute'):
-                return self._impl.execute(sql, params)
-        else:
-            # data.database: execute_query 返回 List[Dict]
-            return self._impl.execute_query(sql, params)
-        raise NotImplementedError("query 方法不可用")
+        """执行查询语句，返回 List[Dict]"""
+        return self._impl.execute_query(sql, params)
 
     def execute(self, sql: str, params: Tuple = None) -> int:
-        if self._mode == 'database_module':
-            if hasattr(self._impl, 'execute'):
-                return self._impl.execute(sql, params)
-            if hasattr(self._impl, 'execute_update'):
-                return self._impl.execute_update(sql, params)
-        else:
-            return self._impl.execute_update(sql, params)
-        raise NotImplementedError("execute 方法不可用")
+        """执行更新语句（返回受影响行数）"""
+        return self._impl.execute_update(sql, params)
 
     def insert(self, table: str, data: Dict[str, Any]) -> Optional[int]:
-        if self._mode == 'database_module':
-            if hasattr(self._impl, 'insert'):
-                return self._impl.insert(table, data)
-            if hasattr(self._impl, 'insert_data'):
-                return self._impl.insert_data(table, data)
-        else:
-            return self._impl.insert_data(table, data)
-        raise NotImplementedError("insert 方法不可用")
+        """插入数据（返回新ID）"""
+        return self._impl.insert_data(table, data)
 
     def update(self, table: str, data: Dict[str, Any], condition: Dict[str, Any]) -> int:
-        # 优先调用实现的 update_data / update
-        if self._mode == 'database_module':
-            if hasattr(self._impl, 'update'):
-                return self._impl.update(table, data, condition)
-            if hasattr(self._impl, 'execute_update'):
-                # 组装简单 UPDATE SQL
-                cols = ", ".join([f"{k}=?" for k in data.keys()])
-                conds = " AND ".join([f"{k}=?" for k in condition.keys()])
-                params = tuple(list(data.values()) + list(condition.values()))
-                sql = f"UPDATE {table} SET {cols} WHERE {conds}"
-                return self._impl.execute_update(sql, params)
-        else:
-            return self._impl.update_data(table, data, condition)
-        raise NotImplementedError("update 方法不可用")
+        """更新数据（返回受影响行数）"""
+        return self._impl.update_data(table, data, condition)
 
     def delete(self, table: str, condition: Dict[str, Any]) -> int:
-        if self._mode == 'database_module':
-            if hasattr(self._impl, 'delete'):
-                return self._impl.delete(table, condition)
-            if hasattr(self._impl, 'execute_update'):
-                conds = " AND ".join([f"{k}=?" for k in condition.keys()])
-                params = tuple(condition.values())
-                sql = f"DELETE FROM {table} WHERE {conds}"
-                return self._impl.execute_update(sql, params)
-        else:
-            return self._impl.delete_data(table, condition)
-        raise NotImplementedError("delete 方法不可用")
+        """删除数据（返回受影响行数）"""
+        return self._impl.delete_data(table, condition)
 
     def close(self):
         try:
@@ -122,28 +71,21 @@ class DatabaseInterface:
     """
 
     def __init__(self, config: dict = None):
-        """
-        初始化数据库接口
-
-        Args:
-            config: 数据库配置字典
-        """
+        """初始化数据库接口"""
         self.config = config or {}
-        self.db = None  # _DBAdapter 实例
+        self.db: Optional[_DBAdapter] = None
         self._init_database()
 
     def _get_db_path(self) -> str:
-        # 优先从 config 或 Config 管理器读取
+        # 获取数据库路径逻辑不变
         db_path = self.config.get('path') or self.config.get('database.path')
         if not db_path and Config:
             try:
-                # Config.get 可能返回 None
                 db_path = Config.get('database.path') or Config.get('database.file') or Config.get('database')
             except Exception:
                 db_path = None
         if not db_path:
             db_path = 'data/bupt_teaching.db'
-        # 确保目录存在
         p = Path(db_path)
         if not p.parent.exists():
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -158,6 +100,69 @@ class DatabaseInterface:
         except Exception as e:
             Logger.error(f"数据库初始化失败: {e}", exc_info=True)
             self.db = None
+
+    # ============ 核心方法：通用查询/插入/更新/删除 ============
+
+    def query(self, sql: str, params: Tuple = None) -> List[Dict]:
+        """执行原生查询，返回字典列表"""
+        if self.db:
+            return self.db.query(sql, params)
+        return []
+
+    def execute(self, sql: str, params: Tuple = None) -> int:
+        """执行原生更新/删除 SQL，返回影响行数"""
+        if self.db:
+            return self.db.execute(sql, params)
+        return 0
+
+    def insert_record(self, table: str, data: Dict[str, Any]) -> Optional[int]:
+        """插入数据到指定表，返回新ID"""
+        if self.db:
+            return self.db.insert(table, data)
+        return None
+
+    def update_record(self, table: str, data: Dict[str, Any], condition: Dict[str, Any]) -> int:
+        """更新指定表数据，返回影响行数"""
+        if self.db:
+            return self.db.update(table, data, condition)
+        return 0
+
+    def delete_record(self, table: str, condition: Dict[str, Any]) -> int:
+        """删除指定表数据，返回影响行数"""
+        if self.db:
+            return self.db.delete(table, condition)
+        return 0
+
+    # ============ 学生/教师操作 ============
+    
+    def query_student_by_id(self, student_id: str) -> Optional[Student]:
+        """按学号查询学生信息，返回 Student 模型"""
+        try:
+            sql = "SELECT * FROM students WHERE student_id=? LIMIT 1"
+            res = self.db.query(sql, (student_id,))
+            return Student.from_dict(res[0]) if res else None #
+        except Exception as e:
+            Logger.error(f"查询学生失败: {e}", exc_info=True)
+            return None
+
+    def insert_student(self, student: Student) -> Optional[int]:
+        """插入学生信息"""
+        try:
+            # Note: 插入时 student.to_dict() 应包含 password 字段，否则数据库会报错
+            return self.db.insert('students', student.to_dict()) #
+        except Exception as e:
+            Logger.error(f"插入学生失败: {e}", exc_info=True)
+            return None
+
+    def query_teacher_by_id(self, teacher_id: str) -> Optional[Teacher]:
+        """按工号查询教师信息，返回 Teacher 模型"""
+        try:
+            sql = "SELECT * FROM teachers WHERE teacher_id=? LIMIT 1"
+            res = self.db.query(sql, (teacher_id,))
+            return Teacher.from_dict(res[0]) if res else None #
+        except Exception as e:
+            Logger.error(f"查询教师失败: {e}", exc_info=True)
+            return None
 
     # ============ 用户相关操作 ============
 
@@ -275,9 +280,42 @@ class DatabaseInterface:
             Logger.error(f"查询分类统计失败: {e}", exc_info=True)
             return []
 
+    # === Colleges / Majors ===
+    def upsert_college(self, code: str, name: str) -> int:
+        return self.insert_record('colleges', {'college_code': code, 'name': name}) or 0
+
+    def add_major(self, college_code: str, name: str, code: str=None) -> int:
+        return self.insert_record('majors', {'college_code': college_code, 'name': name, 'code': code}) or 0
+
+    # === Classrooms / TimeSlots ===
+    def add_classroom(self, name: str, location_type: str, seat_count: int, room_type: str) -> int:
+        return self.insert_record('classrooms', {
+            'name': name, 'location_type': location_type, 'seat_count': seat_count, 'room_type': room_type
+        }) or 0
+
+    def add_timeslot(self, day: int, sec: int, start: str, end: str, session: str) -> int:
+        return self.insert_record('time_slots', {
+            'day_of_week': day, 'section_no': sec, 'starts_at': start, 'ends_at': end, 'session': session
+        }) or 0
+
+    # === Program courses ===
+    def add_program_course(self, major_id: int, course_id: str, category: str, cross_quota: int=0, grade_rec: int=None) -> int:
+        return self.insert_record('program_courses', {
+            'major_id': major_id, 'course_id': course_id, 'course_category': category,
+            'cross_major_quota': cross_quota, 'grade_recommendation': grade_rec
+        }) or 0
+
+    # === Offering sessions ===
+    def bind_offering_session(self, offering_id: int, slot_id: int, classroom_id: int) -> int:
+        return self.insert_record('offering_sessions', {
+            'offering_id': offering_id, 'slot_id': slot_id, 'classroom_id': classroom_id
+        }) or 0
+        
     # ============ 操作日志 ============
 
-    def log_operation(self, user_id: int, action: str, target: str, details: str = None, ip_address: str = None):
+    def log_operation(self, user_id: int, action: str, target: str,
+                  details: str = None, ip_address: str = None,
+                  device: str = None, os: str = None, browser: str = None):
         try:
             log_data = {
                 'user_id': user_id,
@@ -285,9 +323,12 @@ class DatabaseInterface:
                 'target': target,
                 'details': details,
                 'ip_address': ip_address,
+                'device': device,
+                'os': os,
+                'browser': browser,
                 'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
-            self.db.insert('operation_logs', log_data)
+            self.db.insert('system_logs', log_data)
         except Exception as e:
             Logger.error(f"记录操作日志失败: {e}", exc_info=True)
 
@@ -301,7 +342,6 @@ class DatabaseInterface:
             Logger.error(f"关闭数据库连接失败: {e}", exc_info=True)
 
 
-# 使用示例（保持原行为）
 if __name__ == "__main__":
     try:
         db_config = {}

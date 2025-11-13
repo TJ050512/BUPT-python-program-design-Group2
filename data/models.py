@@ -26,6 +26,7 @@ class Student:
     """学生数据模型"""
     student_id: str
     name: str
+    password: Optional[str] = None
     gender: Optional[str] = None
     major: Optional[str] = None
     grade: Optional[int] = None
@@ -33,26 +34,44 @@ class Student:
     email: Optional[str] = None
     phone: Optional[str] = None
     status: str = 'active'
+    college_code: Optional[str] = None
+    major_id: Optional[int] = None
+    admission_type: Optional[str] = None
+    program_years: Optional[int] = None
+
+    def generate_id(self):
+        """根据 grade 和 college_code 自动生成学号"""
+        return f"{self.grade}{self.college_code}{self.student_id[-3:]}"
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
+        if self.student_id and self.college_code and not self.student_id.startswith(str(self.grade)):
+            self.student_id = f"{self.grade}{self.college_code}{self.student_id[-3:]}"
         return {
             'student_id': self.student_id,
+            'college_code': self.college_code,
+            'major_id': self.major_id,
             'name': self.name,
+            'password': self.password,
             'gender': self.gender,
             'major': self.major,
             'grade': self.grade,
             'class_name': self.class_name,
             'email': self.email,
             'phone': self.phone,
-            'status': self.status
+            'status': self.status,
+            'admission_type': self.admission_type,
+            'program_years': self.program_years,
         }
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Student":
         return cls(
             student_id=str(d.get('student_id') or d.get('id') or ''),
+            college_code=d.get('college_code'),
+            major_id=d.get('major_id'),
             name=d.get('name') or '',
+            password=d.get('password'),
             gender=d.get('gender'),
             major=d.get('major'),
             grade=d.get('grade'),
@@ -103,6 +122,48 @@ class Teacher:
 
 
 @dataclass
+class College:
+    college_code: str
+    name: str
+    dean_name: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "college_code": self.college_code,
+            "name": self.name,
+            "dean_name": self.dean_name
+        }
+
+@dataclass
+class Major:
+    major_id: Optional[int]
+    college_code: str
+    name: str
+    code: Optional[str]=None
+    def to_dict(self):
+        return {"major_id": self.major_id, "college_code": self.college_code, "name": self.name, "code": self.code}
+
+
+@dataclass
+class Classroom:
+    classroom_id: Optional[int]
+    name: str
+    location_type: str
+    seat_count: int
+    room_type: str
+    available_equipment: Optional[str] = None
+    def to_dict(self):
+        return {
+            "classroom_id": self.classroom_id,
+            "name": self.name,
+            "location_type": self.location_type,
+            "seat_count": self.seat_count,
+            "room_type": self.room_type,
+            "available_equipment": self.available_equipment
+        }
+
+
+@dataclass
 class Course:
     """课程数据模型"""
     course_id: str
@@ -112,18 +173,27 @@ class Course:
     course_type: str
     department: Optional[str] = None
     description: Optional[str] = None
+    prerequisite: Optional[str] = None
+    max_students: Optional[int] = 60
+    is_public_elective: Optional[int] = 0
+    credit_type: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
-        return {
+        d = {
             'course_id': self.course_id,
             'course_name': self.course_name,
             'credits': self.credits,
             'hours': self.hours,
             'course_type': self.course_type,
             'department': self.department,
-            'description': self.description
+            'description': self.description,
+            'prerequisite': self.prerequisite,
+            'is_public_elective': self.is_public_elective,
+            'credit_type': self.credit_type,
+            'max_students': self.max_students
         }
+        return {k: v for k, v in d.items() if v is not None}
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Course":
@@ -134,6 +204,8 @@ class Course:
             hours=int(d.get('hours') or 0),
             course_type=d.get('course_type') or '',
             department=d.get('department'),
+            is_public_elective=int(d.get('is_public_elective') or 0),
+            credit_type=d.get('credit_type'),
             description=d.get('description')
         )
 
@@ -239,6 +311,10 @@ class Grade:
     gpa: Optional[float] = None
     credits: float = 0.0
     semester: Optional[str] = None
+    exam_type: Optional[str] = None
+    remarks: Optional[str] = None
+    is_makeup: Optional[int] = 0
+    exam_round: Optional[int] = None
 
     @staticmethod
     def calculate_gpa(score: float) -> tuple[str, float]:
@@ -302,3 +378,29 @@ class Grade:
             semester=d.get('semester')
         )
 
+
+@dataclass
+class TimeSlot:
+    slot_id: Optional[int]
+    day_of_week: int
+    section_no: int
+    starts_at: str
+    ends_at: str
+    session: str  # AM/PM/EVENING
+    def to_dict(self):
+        return {"slot_id": self.slot_id, "day_of_week": self.day_of_week, "section_no": self.section_no,
+                "starts_at": self.starts_at, "ends_at": self.ends_at, "session": self.session}
+
+
+@dataclass
+class ProgramCourse:
+    id: Optional[int]
+    major_id: int
+    course_id: str
+    course_category: str   # 必修/选修/公选
+    cross_major_quota: int = 0
+    grade_recommendation: Optional[int] = None
+    def to_dict(self):
+        return {"id": self.id, "major_id": self.major_id, "course_id": self.course_id,
+                "course_category": self.course_category, "cross_major_quota": self.cross_major_quota,
+                "grade_recommendation": self.grade_recommendation}
