@@ -531,21 +531,30 @@ def assign_tas_for_offering(db: DBAdapter, offering_id: int, teacher_id: str, co
 
 
 def create_offerings(db: DBAdapter, semester: str = "2024-2025-2"):
-    """改进开课逻辑，使用 offering_sessions 关联时间和教室"""
+    """
+    改进开课逻辑：
+    1. 使用 offering_sessions 关联时间和教室。
+    2. 维护排课状态，防止同一时间地点冲突。
+    3. 将可读的时间地点信息写入 course_offerings.class_time/classroom 字段。
+    """
     teachers = db.execute_query("SELECT teacher_id FROM teachers")
     teaching_teachers = db.execute_query(
         "SELECT teacher_id FROM teachers WHERE job_type IN ('教学科研岗', '科研岗')"
     )
     teacher_ids = [t["teacher_id"] for t in teaching_teachers] if teaching_teachers else []
-
     
+    # 预先清空时间缓存
+    global _TIMESLOT_CACHE
+    _TIMESLOT_CACHE = None
+
+    # 查询课程时必须包含 department
     courses = db.execute_query("SELECT course_id, is_public_elective, department FROM courses")
     if not courses:
         return
 
     # 获取所有可用的时间段和教室
     time_slots = db.execute_query("SELECT slot_id, session FROM time_slots")
-    classrooms = db.execute_query("SELECT classroom_id FROM classrooms")
+    classrooms = db.execute_query("SELECT classroom_id, name FROM classrooms")
     
     if not time_slots or not classrooms:
         Logger.error("无法创建开课计划，因为时间段或教室数据为空。")
@@ -557,57 +566,111 @@ def create_offerings(db: DBAdapter, semester: str = "2024-2025-2"):
         if slot['session'] in slots_by_session:
             slots_by_session[slot['session']].append(slot['slot_id'])
 
+    # 维护排课状态：(slot_id, classroom_id) -> offering_id
+    # 这一步是为了在 Python 层面避免 SQLite 触发器频繁报错
+    schedule_state = set() 
+
     for course in courses:
-        # 1. 创建 course_offerings 记录
+        # ... (教师分配逻辑不变)
         dept = course["department"]
-        teachers = db.execute_query(
+        teachers_list = db.execute_query(
             "SELECT teacher_id FROM teachers WHERE department=?", (dept,)
         )
-        if not teachers:
+        if not teachers_list:
             continue
-        teacher_id = random.choice(teachers)["teacher_id"]
+        teacher_id = random.choice(teachers_list)["teacher_id"]
+        
+        
+        # 2. 为开课计划安排具体的时间和教室，并插入到 offering_sessions
+        assigned_slot = None
+        assigned_room = None
+        
+        # --- 选取无冲突的时间/地点 ---
+        if course["is_public_elective"] == 1:
+            available_slots = slots_by_session["EVENING"]
+        else:
+            available_slots = slots_by_session["AM"] + slots_by_session["PM"]
+        
+        # 打乱候选列表，尝试找到一个无冲突的组合
+        random.shuffle(available_slots)
+        random.shuffle(classrooms) 
+        
+        for slot_id in available_slots:
+            for room in classrooms:
+                room_id = room["classroom_id"]
+                if (slot_id, room_id) not in schedule_state:
+                    assigned_slot = slot_id
+                    assigned_room = room
+                    break
+            if assigned_slot:
+                break
+        
+        if not assigned_slot:
+            Logger.warning(f"课程 {course['course_id']} (公选:{course['is_public_elective']}) 无法排课：所有时间/教室已满或冲突。")
+            continue
+        
+        # --- 1. 创建 course_offerings 记录（携带时间和地点文本） ---
+        room_name = assigned_room["name"]
+        session_str = _build_session_string(db, assigned_slot, room_name) # 生成可读的展示字符串
+
         offering_data = {
             "course_id": course["course_id"],
             "teacher_id": teacher_id,
             "semester": semester,
             "max_students": random.choice([40, 60, 120]),
-            "status": "open"
+            "status": "open",
+            "class_time": session_str,       # 🎯 新增：用于系统展示
+            "classroom": room_name,          # 🎯 新增：用于系统展示
+            "classroom_id": assigned_room["classroom_id"], # 绑定教室外键
         }
-        # 这里不再写入 class_time 和 classroom 文本
         offering_id = db.insert_data("course_offerings", offering_data)
 
         if not offering_id:
             continue
 
-        assign_tas_for_offering(db, offering_id, teacher_id, course["course_id"])
-
-        # 2. 为开课计划安排具体的时间和教室，并插入到 offering_sessions
+        # 3. 插入到 offering_sessions (此处会触发数据库的 UNIQUE (slot_id, classroom_id) 校验)
         try:
-            # 根据课程类型选择时间段
-            if course["is_public_elective"] == 1:
-                # 公选课，只在晚上安排
-                available_slots = slots_by_session["EVENING"]
-            else:
-                # 普通课程，在上午或下午安排
-                available_slots = slots_by_session["AM"] + slots_by_session["PM"]
-            
-            if not available_slots:
-                continue
-
-            # 随机选择一个时间段ID和一个教室ID
-            slot_id_to_assign = random.choice(available_slots)
-            classroom_id_to_assign = random.choice(classrooms)["classroom_id"]
-
-            # 插入到关联表
             db.insert_data("offering_sessions", {
                 "offering_id": offering_id,
-                "slot_id": slot_id_to_assign,
-                "classroom_id": classroom_id_to_assign
+                "slot_id": assigned_slot,
+                "classroom_id": assigned_room["classroom_id"]
             })
+            # 记录到 Python 内存状态，避免后续冲突
+            schedule_state.add((assigned_slot, assigned_room["classroom_id"]))
         except Exception as e:
-            Logger.warning(f"为课程 {course['course_id']} (Offering ID: {offering_id}) 安排时间教室失败: {e}")
+            Logger.warning(f"为课程 {course['course_id']} 插入 offering_sessions 失败（可能是触发器冲突或重复）：{e}")
+            # 如果是冲突导致的失败，应该删除前面插入的 offering 记录
+            db.execute_update("DELETE FROM course_offerings WHERE offering_id=?", (offering_id,))
+            continue # 跳过助教分配
+
+        assign_tas_for_offering(db, offering_id, teacher_id, course["course_id"])
 
     Logger.info("开课计划（course_offerings & offering_sessions）生成完成。")
+
+
+# 全局变量，用于缓存 time_slots 详情
+_TIMESLOT_CACHE: Optional[Dict[int, Dict]] = None
+
+def _get_timeslot_details(db: DBAdapter) -> Dict[int, Dict]:
+    """从数据库加载 time_slots 详情并缓存"""
+    global _TIMESLOT_CACHE
+    if _TIMESLOT_CACHE is None:
+        slots = db.execute_query("SELECT slot_id, day_of_week, starts_at, ends_at FROM time_slots")
+        _TIMESLOT_CACHE = {s['slot_id']: s for s in slots}
+    return _TIMESLOT_CACHE
+
+def _build_session_string(db: DBAdapter, slot_id: int, classroom_name: str) -> str:
+    """根据 slot_id 和教室名生成可读的上课时间地点字符串"""
+    slot_details = _get_timeslot_details(db).get(slot_id)
+    if not slot_details:
+        return f"时间未定 ({classroom_name})"
+
+    day_map = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6: "周六", 7: "周日"}
+    day = day_map.get(slot_details['day_of_week'], "未知")
+    start = slot_details['starts_at'][:-3] # 截去秒
+    end = slot_details['ends_at'][:-3]
+
+    return f"{day} {start}~{end} @ {classroom_name}"
 
 
 def _get_academic_year(student_grade: int, semester: str) -> int:

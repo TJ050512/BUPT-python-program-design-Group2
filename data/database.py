@@ -306,7 +306,8 @@ class Database:
                 FOREIGN KEY (offering_id) REFERENCES course_offerings(offering_id) ON DELETE CASCADE,
                 FOREIGN KEY (slot_id) REFERENCES time_slots(slot_id),
                 FOREIGN KEY (classroom_id) REFERENCES classrooms(classroom_id),
-                UNIQUE (offering_id, slot_id)
+                UNIQUE (offering_id, slot_id),
+                UNIQUE (slot_id, classroom_id)
             )
         ''')
 
