@@ -908,7 +908,7 @@ def _get_timeslot_details(db: DBAdapter) -> Dict[int, Dict]:
         slots = db.execute_query("SELECT slot_id, day_of_week, starts_at, ends_at FROM time_slots")
         _TIMESLOT_CACHE = {s['slot_id']: s for s in slots}
     return _TIMESLOT_CACHE
-    
+
 
 def _build_session_string(db: DBAdapter, slot_id: int, classroom_name: str) -> str:
     """根据 slot_id 和教室名生成可读的上课时间地点字符串"""
@@ -1552,7 +1552,10 @@ def seed_all(db: DBAdapter, students: int = 200, teachers: int = 10, semester: s
     # 8. 专业-课程培养方案（必修/选修/公选）
     seed_program_courses(db)
 
-    # === 9~11. 自动生成四个年级的完整学年（秋季 + 春季） ===
+    # 9. 写入课程矩阵到数据库
+    seed_curriculum_matrix(db)
+
+    # === 10~12. 自动生成四个年级的完整学年（秋季 + 春季） ===
     start_year = int(semester.split("-")[0])
 
     SEMESTERS = [
@@ -2016,6 +2019,51 @@ def export_program_curriculum(db: DBAdapter, filepath: str = None):
             })
 
     Logger.info("✅ 课程体系表导出完成。")
+
+
+def seed_curriculum_matrix(db: DBAdapter):
+    """
+    基于 program_courses，将课程矩阵数据写入 curriculum_matrix 表
+    （替代 generate_curriculum_matrix 的文件导出功能）
+    """
+    rows = db.execute_query("""
+        SELECT 
+            pc.major_id, pc.course_id, pc.course_category, pc.grade_recommendation,
+            m.name AS major_name, c.course_name, c.credits, c.course_type
+        FROM program_courses pc
+        JOIN majors m ON pc.major_id = m.major_id
+        JOIN courses c ON pc.course_id = c.course_id
+    """)
+
+    # 映射关系：用于区分秋/春学期
+    def get_term(cid: str) -> str:
+        # 约定：尾号2是春季课，其他是秋季课
+        return '春' if cid.endswith('2') and len(cid) == 5 else '秋'
+
+    records = []
+    for r in rows:
+        cid = r["course_id"]
+        term = get_term(cid)
+        
+        # 将 grade_recommendation (1, 2, 3, 4) 和 term (秋/春) 写入数据库
+        records.append({
+            "major_id": r["major_id"],
+            "major_name": r["major_name"],
+            "course_id": cid,
+            "course_name": r["course_name"],
+            "credits": r["credits"],
+            "grade": r["grade_recommendation"],
+            "term": term,
+            "category": r["course_category"]
+        })
+        
+    for record in records:
+        try:
+            db.insert_data("curriculum_matrix", record)
+        except Exception as e:
+            Logger.warning(f"写入课程矩阵失败: {record['major_name']} - {record['course_id']} - {e}")
+            
+    Logger.info("✅ 课程矩阵数据写入数据库完成。")
 
 
 def generate_curriculum_matrix(csv_path="data/program_curriculum.csv",

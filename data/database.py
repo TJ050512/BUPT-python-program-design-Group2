@@ -296,6 +296,24 @@ class Database:
             )
         ''')
 
+        # === 课程矩阵表（用于前端显示培养方案） ===
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS curriculum_matrix (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                major_id INTEGER NOT NULL,
+                major_name TEXT NOT NULL,
+                course_id TEXT NOT NULL,
+                course_name TEXT NOT NULL,
+                grade INTEGER NOT NULL,
+                term TEXT NOT NULL,        -- 学期：秋/春
+                category TEXT NOT NULL,    -- 必修/选修
+                credits REAL NOT NULL,
+                FOREIGN KEY (major_id) REFERENCES majors(major_id),
+                FOREIGN KEY (course_id) REFERENCES courses(course_id),
+                UNIQUE(major_id, course_id)
+            )
+        ''')
+
         # === 开课节次表 ===
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS offering_sessions (
