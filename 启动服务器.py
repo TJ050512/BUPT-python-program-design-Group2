@@ -214,6 +214,50 @@ class ProductionServer:
                 message="统计完成"
             )
         
+        # 11. 执行SQL查询（用于登录等通用数据库操作）
+        def handle_execute_query(request):
+            data = request.get('data', {})
+            sql = data.get('sql')
+            params = data.get('params', ())
+            
+            Logger.debug(f"执行查询: {sql[:50]}...")
+            
+            try:
+                results = self.db.execute_query(sql, params)
+                return Protocol.create_response(
+                    status=Protocol.STATUS_SUCCESS,
+                    data=results,
+                    message=f"查询成功，返回{len(results)}条记录"
+                )
+            except Exception as e:
+                Logger.error(f"查询失败: {e}")
+                return Protocol.create_response(
+                    status=Protocol.STATUS_ERROR,
+                    message=f"查询失败: {str(e)}"
+                )
+        
+        # 12. 执行SQL更新（用于修改密码等更新操作）
+        def handle_execute_update(request):
+            data = request.get('data', {})
+            sql = data.get('sql')
+            params = data.get('params', ())
+            
+            Logger.debug(f"执行更新: {sql[:50]}...")
+            
+            try:
+                affected = self.db.execute_update(sql, params)
+                return Protocol.create_response(
+                    status=Protocol.STATUS_SUCCESS,
+                    data={'affected_rows': affected},
+                    message=f"更新成功，影响{affected}行"
+                )
+            except Exception as e:
+                Logger.error(f"更新失败: {e}")
+                return Protocol.create_response(
+                    status=Protocol.STATUS_ERROR,
+                    message=f"更新失败: {str(e)}"
+                )
+        
         # 注册所有处理器
         self.server.register_handler(Protocol.ACTION_LOGIN, handle_login)
         self.server.register_handler('get_courses', handle_get_courses)
@@ -225,6 +269,8 @@ class ProductionServer:
         self.server.register_handler('get_teacher_courses', handle_get_teacher_courses)
         self.server.register_handler('get_course_students', handle_get_course_students)
         self.server.register_handler('get_statistics', handle_get_statistics)
+        self.server.register_handler('execute_query', handle_execute_query)
+        self.server.register_handler('execute_update', handle_execute_update)
         
         Logger.info("所有消息处理器注册完成")
     
