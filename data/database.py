@@ -362,6 +362,29 @@ class Database:
             )
         ''')
 
+        # === 触发器：防止同一门课程重复选课 (即使老师不同) ===
+        # 目标：在插入 enrollments 之前，检查该学生是否已经选择了该课程的任一班级
+        self.cursor.executescript('''
+            CREATE TRIGGER IF NOT EXISTS trg_single_course_enrollment_bi
+            BEFORE INSERT ON enrollments
+            BEGIN
+                SELECT
+                    CASE
+                        -- 检查学生是否已经选了这门课程的任何一个班级
+                        WHEN EXISTS (
+                            SELECT 1
+                            FROM enrollments e
+                            -- 通过 course_offerings 表获取 course_id
+                            JOIN course_offerings o ON e.offering_id = o.offering_id
+                            WHERE e.student_id = NEW.student_id -- 目标学生
+                              -- 当前尝试插入的 offering_id 对应的 course_id
+                              AND o.course_id = (SELECT course_id FROM course_offerings WHERE offering_id = NEW.offering_id) 
+                        )
+                        THEN RAISE(ABORT, '该学生已选了该课程的任一班级，不能重复选择')
+                    END;
+            END;
+        ''')
+        
         # === 触发器（公选课仅晚间 & 跨专业限额） ===
         self.cursor.executescript('''
             CREATE TRIGGER IF NOT EXISTS trg_public_only_evening_bi
