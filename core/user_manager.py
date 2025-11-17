@@ -206,7 +206,13 @@ class UserManager:
                     result = self.db.execute_query(sql, (username,))
                     detected_type = 'teacher'
                 else:
-                    sql = "SELECT * FROM students WHERE student_id=?"
+                    # 查询学生信息，同时关联学院表获取学院名称
+                    sql = """
+                        SELECT s.*, c.name as college_name
+                        FROM students s
+                        LEFT JOIN colleges c ON s.college_code = c.college_code
+                        WHERE s.student_id=?
+                    """
                     result = self.db.execute_query(sql, (username,))
                     detected_type = 'student'
             else:
@@ -220,7 +226,13 @@ class UserManager:
                     result = self.db.execute_query(sql, (username,))
                     detected_type = 'teacher'
                 else:
-                    sql = "SELECT * FROM students WHERE student_id=?"
+                    # 查询学生信息，同时关联学院表获取学院名称
+                    sql = """
+                        SELECT s.*, c.name as college_name
+                        FROM students s
+                        LEFT JOIN colleges c ON s.college_code = c.college_code
+                        WHERE s.student_id=?
+                    """
                     result = self.db.execute_query(sql, (username,))
                     detected_type = 'student'
             
@@ -253,7 +265,8 @@ class UserManager:
                 extra_info = {
                     'major': user_data.get('major'),
                     'grade': user_data.get('grade'),
-                    'class_name': user_data.get('class_name')
+                    'class_name': user_data.get('class_name'),
+                    'college': user_data.get('college_name', '')  # 添加学院名称
                 }
             
             user = User(

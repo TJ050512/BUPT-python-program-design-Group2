@@ -880,6 +880,16 @@ def create_offerings(db: DBAdapter, semester: str, all_semesters: List[str]) -> 
                             "VALUES(?,?,?)",
                             (offering_id, slot["slot_id"], room["classroom_id"])
                         )
+                        
+                        # <<<<<<<<<<<<<<<<< 在这里新增代码 >>>>>>>>>>>>>>>>>
+                        # 📌 步骤 4.5 修复：将可读的时间/教室信息更新回 course_offerings
+                        session_str = _build_session_string(db, slot["slot_id"], room["name"])
+                        db.execute_update(
+                            "UPDATE course_offerings SET class_time=?, classroom=? WHERE offering_id=?",
+                            (session_str, room["name"], offering_id)
+                        )
+                        # <<<<<<<<<<<<<<<<< 新增代码结束 >>>>>>>>>>>>>>>>>
+
                     except Exception as e:
                         # 只有在这里，我们才输出警告，因为这可能是时间和教室冲突
                         Logger.warning(f"绑定上课时间地点失败 offering={offering_id}, 错误: {e}")
@@ -898,6 +908,7 @@ def _get_timeslot_details(db: DBAdapter) -> Dict[int, Dict]:
         slots = db.execute_query("SELECT slot_id, day_of_week, starts_at, ends_at FROM time_slots")
         _TIMESLOT_CACHE = {s['slot_id']: s for s in slots}
     return _TIMESLOT_CACHE
+    
 
 def _build_session_string(db: DBAdapter, slot_id: int, classroom_name: str) -> str:
     """根据 slot_id 和教室名生成可读的上课时间地点字符串"""

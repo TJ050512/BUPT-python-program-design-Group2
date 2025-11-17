@@ -3,6 +3,7 @@
 负责学生选课、退课、选课查询
 """
 
+import sqlite3
 from typing import List, Dict, Optional, Tuple
 from utils.logger import Logger
 
@@ -51,6 +52,11 @@ class EnrollmentManager:
             if existing_enrollment and existing_enrollment['status'] == 'enrolled':
                 return False, "您已选过该课程"
             
+            # 2.5. 检查是否已在本学期选择了同一门课程（不同老师）
+            same_course_check = self._check_same_course_enrolled(student_id, offering['course_id'], semester)
+            if same_course_check:
+                return False, f"您已在本学期选择了【{same_course_check}】，不能重复选择同一门课程"
+            
             # 3. 检查时间冲突
             conflict = self._check_time_conflict(student_id, semester, offering['class_time'])
             if conflict:
@@ -65,14 +71,18 @@ class EnrollmentManager:
                                           {'enrollment_id': existing_enrollment['enrollment_id']})
                 enrollment_id = existing_enrollment['enrollment_id'] if count > 0 else None
             else:
-                # 插入新记录
-                enrollment_data = {
-                    'student_id': student_id,
-                    'offering_id': offering_id,
-                    'semester': semester,
-                    'status': 'enrolled'
-                }
-                enrollment_id = self.db.insert_data('enrollments', enrollment_data)
+                # 插入新记录（直接使用SQL以捕获触发器错误）
+                try:
+                    sql = "INSERT INTO enrollments (student_id, offering_id, semester, status) VALUES (?, ?, ?, ?)"
+                    self.db.cursor.execute(sql, (student_id, offering_id, semester, 'enrolled'))
+                    self.db.conn.commit()
+                    enrollment_id = self.db.cursor.lastrowid
+                except sqlite3.OperationalError as db_error:
+                    # 重新抛出数据库错误，让外层捕获处理
+                    raise db_error
+                except Exception as db_error:
+                    # 其他数据库错误也重新抛出
+                    raise db_error
             
             if enrollment_id:
                 # 5. 更新课程选课人数
@@ -90,9 +100,25 @@ class EnrollmentManager:
             else:
                 return False, "选课失败，请稍后重试"
             
+        except sqlite3.OperationalError as e:
+            # 捕获数据库触发器错误
+            error_msg = str(e)
+            Logger.error(f"选课失败（数据库错误）: {error_msg}")
+            
+            # 检查是否是跨专业名额已满
+            if "跨专业名额已满" in error_msg:
+                return False, "该课程的跨专业名额已满，无法选课"
+            elif "公选课必须安排在晚间节次" in error_msg:
+                return False, "公选课必须安排在晚间节次"
+            else:
+                return False, f"选课失败：{error_msg}"
         except Exception as e:
             Logger.error(f"选课失败: {e}")
-            return False, "选课失败，请稍后重试"
+            error_msg = str(e)
+            # 检查是否是跨专业名额已满（可能在其他异常中）
+            if "跨专业名额已满" in error_msg:
+                return False, "该课程的跨专业名额已满，无法选课"
+            return False, f"选课失败：{error_msg}"
     
     def drop_course(self, student_id: str, offering_id: int) -> Tuple[bool, str]:
         """
@@ -323,4 +349,31 @@ class EnrollmentManager:
         sql = "SELECT * FROM grades WHERE enrollment_id = ?"
         result = self.db.execute_query(sql, (enrollment_id,))
         return result[0] if result else None
+    
+    def _check_same_course_enrolled(self, student_id: str, course_id: str, semester: str) -> Optional[str]:
+        """
+        检查学生是否已在本学期选择了同一门课程（不同老师）
+        
+        Args:
+            student_id: 学号
+            course_id: 课程ID
+            semester: 学期
+        
+        Returns:
+            如果已选，返回课程名称；否则返回None
+        """
+        sql = """
+            SELECT c.course_name
+            FROM enrollments e
+            JOIN course_offerings co ON e.offering_id = co.offering_id
+            JOIN courses c ON co.course_id = c.course_id
+            WHERE e.student_id = ?
+              AND e.semester = ?
+              AND e.status = 'enrolled'
+              AND co.course_id = ?
+            LIMIT 1
+        """
+        
+        result = self.db.execute_query(sql, (student_id, semester, course_id))
+        return result[0]['course_name'] if result else None
 

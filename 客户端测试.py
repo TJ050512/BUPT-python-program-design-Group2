@@ -31,17 +31,43 @@ def test_connection(host: str, port: int = 8888):
     
     # 1. 测试连接
     print("\n[1] 测试连接服务器...")
+    print(f"   目标: {host}:{port}")
+    
+    import socket as sock_module
+    try:
+        # 先测试端口是否可达
+        test_socket = sock_module.socket(sock_module.AF_INET, sock_module.SOCK_STREAM)
+        test_socket.settimeout(3)
+        result = test_socket.connect_ex((host, port))
+        test_socket.close()
+        
+        if result != 0:
+            print(f"✗ 端口连接测试失败 (错误码: {result})")
+            print("\n可能的原因：")
+            print("  1. 服务器未启动")
+            print("  2. IP地址或端口错误")
+            print("  3. 防火墙阻止连接")
+            print("  4. 两台电脑不在同一局域网")
+            print("  5. 服务器监听地址不正确")
+            return False
+        else:
+            print(f"✓ 端口可达")
+    except Exception as e:
+        print(f"⚠ 端口测试异常: {e}")
+    
     success, msg = client.connect()
     if not success:
         print(f"✗ 连接失败: {msg}")
-        print("\n可能的原因：")
-        print("  1. 服务器未启动")
-        print("  2. IP地址或端口错误")
-        print("  3. 防火墙阻止连接")
-        print("  4. 两台电脑不在同一局域网")
+        print("\n详细排查步骤：")
+        print("  1. 确认服务器已启动并显示'服务器启动成功'")
+        print(f"  2. 确认服务器IP是: {host}")
+        print(f"  3. 确认端口是: {port}")
+        print("  4. 在服务器电脑上运行: netstat -an | findstr 8888")
+        print("  5. 检查防火墙设置")
+        print("  6. 尝试ping服务器IP: ping " + host)
         return False
     
-    print(f"✓ 连接成功")
+    print(f"✓ 连接成功: {msg}")
     
     # 2. 测试学生登录
     print("\n[2] 测试学生登录...")
@@ -145,6 +171,7 @@ def main():
         print("\n请输入服务器IP地址:")
         print("  本机测试: localhost 或 127.0.0.1")
         print("  局域网测试: 例如 192.168.1.100")
+        print("  提示: 服务器启动时会显示本机IP地址")
         host = input("\n服务器IP: ").strip()
         
         if not host:
@@ -162,6 +189,7 @@ def main():
         port = 8888
     
     print(f"\n目标服务器: {host}:{port}")
+    print(f"开始测试连接...")
     
     # 运行测试
     try:
@@ -170,8 +198,18 @@ def main():
         print("\n" + "=" * 70)
         if success:
             print("✓ 所有测试通过！网络连接正常")
+            print("\n💡 提示：")
+            print("  - 如果这是跨机器测试，说明网络配置正确")
+            print("  - 可以开始使用GUI客户端连接服务器")
         else:
             print("✗ 测试失败，请检查网络连接")
+            print("\n🔧 故障排查：")
+            print("  1. 确认服务器已启动（运行: python 启动服务器.py）")
+            print(f"  2. 确认服务器IP地址正确（当前尝试: {host}）")
+            print(f"  3. 确认端口正确（当前尝试: {port}）")
+            print("  4. 检查防火墙设置")
+            print("  5. 确认两台电脑在同一局域网")
+            print("  6. 尝试在服务器电脑上运行: python 客户端测试.py localhost")
         print("=" * 70)
         
     except KeyboardInterrupt:

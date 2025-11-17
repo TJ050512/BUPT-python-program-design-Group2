@@ -405,37 +405,54 @@ class Database:
             BEGIN
                 SELECT
                 CASE
+                    -- 只有当学生选择的是其他专业的课程时才检查跨专业名额
+                    -- 即：学生的major_id不在该课程的任何program_courses记录中
                     WHEN EXISTS (
                         SELECT 1
-                        FROM program_courses pc
-                        JOIN course_offerings o ON o.course_id = pc.course_id
+                        FROM course_offerings o
                         JOIN students s ON s.student_id = NEW.student_id
                         WHERE o.offering_id = NEW.offering_id
-                            AND pc.course_category IN ('必修','选修')
                             AND s.major_id IS NOT NULL
-                            AND s.major_id <> pc.major_id
+                            -- 检查是否存在该学生专业的program_courses记录
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM program_courses pc
+                                WHERE pc.course_id = o.course_id
+                                    AND pc.major_id = s.major_id
+                                    AND pc.course_category IN ('必修','选修')
+                            )
+                            -- 并且该课程确实有program_courses记录（说明是专业课程）
+                            AND EXISTS (
+                                SELECT 1
+                                FROM program_courses pc2
+                                WHERE pc2.course_id = o.course_id
+                                    AND pc2.course_category IN ('必修','选修')
+                            )
                     )
                     THEN
                     CASE
                         WHEN (
-                            SELECT pcx.cross_major_quota - (
+                            SELECT MIN(pcx.cross_major_quota) - (
                                 SELECT COUNT(*)
                                 FROM enrollments e
                                 JOIN students sx ON sx.student_id = e.student_id
+                                JOIN course_offerings ox ON ox.offering_id = e.offering_id
                                 WHERE e.offering_id = NEW.offering_id
-                                AND sx.major_id IS NOT NULL
-                                AND sx.major_id <> (
-                                    SELECT pc2.major_id
-                                    FROM program_courses pc2
-                                    JOIN course_offerings o2 ON o2.course_id=pc2.course_id
-                                    WHERE o2.offering_id=NEW.offering_id
-                                    LIMIT 1
-                                )
+                                    AND e.status = 'enrolled'
+                                    AND sx.major_id IS NOT NULL
+                                    -- 统计跨专业选课的学生数（不在任何program_courses记录中的学生）
+                                    AND NOT EXISTS (
+                                        SELECT 1
+                                        FROM program_courses pc3
+                                        WHERE pc3.course_id = ox.course_id
+                                            AND pc3.major_id = sx.major_id
+                                            AND pc3.course_category IN ('必修','选修')
+                                    )
                             )
                             FROM program_courses pcx
                             JOIN course_offerings ox ON ox.course_id = pcx.course_id
                             WHERE ox.offering_id = NEW.offering_id
-                            LIMIT 1
+                                AND pcx.course_category IN ('必修','选修')
                         ) <= 0
                         THEN RAISE(ABORT,'跨专业名额已满')
                     END
