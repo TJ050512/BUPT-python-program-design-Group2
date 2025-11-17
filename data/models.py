@@ -217,7 +217,10 @@ class CourseOffering:
     course_id: str = ''
     course_name: Optional[str] = None
     teacher_id: Optional[str] = None
+    ta1_id: Optional[str] = None           # 助教 1
+    ta2_id: Optional[str] = None           # 助教 2
     teacher_name: Optional[str] = None
+    department: Optional[str] = None       # 开课学院
     semester: str = ''
     class_time: Optional[str] = None
     classroom: Optional[str] = None
@@ -237,6 +240,9 @@ class CourseOffering:
             'course_id': self.course_id,
             'course_name': self.course_name,
             'teacher_id': self.teacher_id,
+            'ta1_id': self.ta1_id,
+            'ta2_id': self.ta2_id,
+            'department': self.department,
             'teacher_name': self.teacher_name,
             'semester': self.semester,
             'class_time': self.class_time,
@@ -254,7 +260,7 @@ class CourseOffering:
             course_id=str(d.get('course_id') or ''),
             course_name=d.get('course_name'),
             teacher_id=d.get('teacher_id'),
-            teacher_name=d.get('teacher_name'),
+            teacher_name = d.get("teacher_name") or d.get("name"),
             semester=d.get('semester') or '',
             class_time=d.get('class_time'),
             classroom=d.get('classroom'),

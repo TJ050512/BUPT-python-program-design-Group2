@@ -341,6 +341,82 @@ class DatabaseInterface:
         except Exception as e:
             Logger.error(f"关闭数据库连接失败: {e}", exc_info=True)
 
+    # ============ 课程/开课查询 ============
+    def query_offerings_by_semester(self, semester: str, student_id: str=None) -> List[Dict]:
+        """
+        查询本学期所有开课班级，并包含教师、时间和教室信息。
+        如果提供了 student_id，则包含该学生是否已选该班级的信息。
+        """
+        # 使用 LEFT JOIN 链接所有必要信息
+        sql = """
+            SELECT
+                o.offering_id,
+                o.course_id,
+                o.semester,
+                o.max_students,
+                o.current_students,
+                o.status,
+                c.course_name,
+                c.credits,
+                c.hours,
+                c.course_type,
+                t.teacher_id,
+                t.name AS teacher_name,
+                ts.day_of_week,
+                ts.starts_at,
+                ts.ends_at,
+                r.name AS classroom_name,
+                (SELECT COUNT(*) FROM enrollments e WHERE e.student_id = ? AND e.offering_id = o.offering_id) AS is_enrolled
+            FROM course_offerings o
+            JOIN courses c ON o.course_id = c.course_id
+            JOIN teachers t ON o.teacher_id = t.teacher_id
+            LEFT JOIN offering_sessions os ON o.offering_id = os.offering_id
+            LEFT JOIN time_slots ts ON os.slot_id = ts.slot_id
+            LEFT JOIN classrooms r ON os.classroom_id = r.classroom_id
+            WHERE o.semester = ?
+            ORDER BY o.course_id, o.teacher_id
+        """
+        params = (student_id or "", semester)
+        rows = self.db.query(sql, params) if self.db else []
+        
+        # 聚合逻辑：将同一个课程的不同班级聚合成一个列表
+        aggregated_courses: Dict[str, Dict] = {}
+        
+        for row in rows:
+            cid = row["course_id"]
+            teacher_time_str = ""
+            if row.get("day_of_week") and row.get("starts_at"):
+                day_map = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五"}
+                day = day_map.get(row["day_of_week"], "未知")
+                start = row["starts_at"][:-3]
+                end = row["ends_at"][:-3]
+                classroom = row.get("classroom_name") or "待定"
+                teacher_time_str = f"{day} {start}~{end} @ {classroom}"
+            
+            offering_detail = {
+                "offering_id": row["offering_id"],
+                "teacher_id": row["teacher_id"],
+                "teacher_name": row["teacher_name"],
+                "max_students": row["max_students"],
+                "current_students": row["current_students"],
+                "class_time": teacher_time_str,
+                "is_enrolled": row["is_enrolled"] > 0
+            }
+            
+            if cid not in aggregated_courses:
+                # 第一次遇到这门课程，创建聚合记录
+                aggregated_courses[cid] = {
+                    "course_id": cid,
+                    "course_name": row["course_name"],
+                    "credits": row["credits"],
+                    "course_type": row["course_type"],
+                    "offerings": [offering_detail] # 存储第一个班级信息
+                }
+            else:
+                # 再次遇到，将班级信息追加到 offerings 列表
+                aggregated_courses[cid]["offerings"].append(offering_detail)
+        
+        return list(aggregated_courses.values())
 
 if __name__ == "__main__":
     try:
@@ -359,4 +435,3 @@ if __name__ == "__main__":
             di.close()
         except Exception:
             pass
-

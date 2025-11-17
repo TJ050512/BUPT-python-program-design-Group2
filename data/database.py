@@ -306,7 +306,8 @@ class Database:
                 FOREIGN KEY (offering_id) REFERENCES course_offerings(offering_id) ON DELETE CASCADE,
                 FOREIGN KEY (slot_id) REFERENCES time_slots(slot_id),
                 FOREIGN KEY (classroom_id) REFERENCES classrooms(classroom_id),
-                UNIQUE (offering_id, slot_id)
+                UNIQUE (offering_id, slot_id),
+                UNIQUE (slot_id, classroom_id)
             )
         ''')
 
@@ -423,7 +424,8 @@ class Database:
         # 学生表：入学方式 / 学制（年）
         for sql in [
             "ALTER TABLE students ADD COLUMN admission_type TEXT",  # 保送/统招/推免/交换/留学生等
-            "ALTER TABLE students ADD COLUMN program_years INTEGER" # 2/3/4/5 年等
+            "ALTER TABLE students ADD COLUMN program_years INTEGER", # 2/3/4/5 年等
+            "ALTER TABLE course_offerings ADD COLUMN department TEXT"
         ]:
             try: self.cursor.execute(sql)
             except Exception: pass
@@ -614,174 +616,200 @@ class Database:
             Logger.info("默认管理员账号已存在")
     
     def init_demo_data(self):
-        """初始化演示数据"""
+        """
+        初始化演示数据（完全修复版）
+        - 避免违反 CHECK 约束
+        - 教师工号、学生学号全部合法
+        - 若数据库已有学生，则只创建管理员
+        """
         from utils.crypto import CryptoUtil
-        
-        # 检查是否已有数据
-        result = self.execute_query("SELECT COUNT(*) as count FROM students")
-        has_students = result and result[0]['count'] > 0
-        
-        if has_students:
-            Logger.info("数据库已有学生数据，跳过学生数据初始化")
-        else:
-            Logger.info("开始初始化演示数据...")
-        
-        # 1. 确保管理员账号存在（无论是否有其他数据）
+
+        # 检查是否已有学生（避免冲突）
+        has_students = self.execute_query("SELECT COUNT(*) AS c FROM students")[0]["c"] > 0
+
+        Logger.info("开始初始化演示数据...")
+
+        # 1. 始终确保管理员存在
         self.ensure_admin_exists()
-        
+
+        # 若数据库里已有学生数据 → 仅创建管理员，不插入演示数据
         if has_students:
-            return  # 如果已有学生数据，只创建管理员后返回
-        
-        # 2. 添加教师
-        teachers = [
+            Logger.info("数据库已有学生/课程数据，跳过演示数据初始化")
+            return
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # ==========================
+        # 2. 演示教师（10 位合法工号）
+        # ==========================
+        demo_teachers = [
             {
-                'teacher_id': 'teacher001',
-                'name': '张教授',
-                'password': CryptoUtil.hash_password('2001234567'),
-                'gender': '男',
-                'title': '教授',
-                'department': '计算机学院',
-                'email': 'zhang@bupt.edu.cn',
-                'phone': '010-12345678'
+                "teacher_id": "2020010001",
+                "name": "张伟",
+                "password": CryptoUtil.hash_password("teacher123"),
+                "gender": "男",
+                "title": "教授",
+                "job_type": "教学科研岗",
+                "hire_level": "正高级",
+                "department": "计算机学院",
+                "email": "2020010001@bupt.edu.cn",
+                "phone": "010-88887777",
+                "hire_date": "2020-09-01",
+                "status": "active",
+                "created_at": now,
+                "updated_at": now
             },
             {
-                'teacher_id': 'teacher002',
-                'name': '李副教授',
-                'password': CryptoUtil.hash_password('2019876543'),
-                'gender': '女',
-                'title': '副教授',
-                'department': '计算机学院',
-                'email': 'li@bupt.edu.cn',
-                'phone': '010-12345679'
-            }
+                "teacher_id": "2020010002",
+                "name": "李娜",
+                "password": CryptoUtil.hash_password("teacher123"),
+                "gender": "女",
+                "title": "副教授",
+                "job_type": "教学科研岗",
+                "hire_level": "副高级",
+                "department": "计算机学院",
+                "email": "2020010002@bupt.edu.cn",
+                "phone": "010-88886666",
+                "hire_date": "2018-09-01",
+                "status": "active",
+                "created_at": now,
+                "updated_at": now
+            },
         ]
-        
-        for teacher in teachers:
+
+        for t in demo_teachers:
             try:
-                self.insert_data('teachers', teacher)
+                self.insert_data("teachers", t)
             except Exception as e:
-                Logger.warning(f"教师数据可能已存在: {e}")
-        
-        # 3. 添加学生
-        students = [
+                Logger.warning(f"教师 {t['teacher_id']} 插入失败：{e}")
+
+        # ==========================
+        # 3. 演示学生（学号合法）
+        # ==========================
+        demo_students = [
             {
-                'student_id': '2021211001',
-                'name': '李明',
-                'password': CryptoUtil.hash_password('student123'),
-                'gender': '男',
-                'major': '计算机科学与技术',
-                'grade': 2021,
-                'class_name': '2021211',
-                'email': '2021211001@bupt.edu.cn'
+                "student_id": "2021211001",
+                "name": "李明",
+                "password": CryptoUtil.hash_password("student123"),
+                "gender": "男",
+                "major": "计算机科学与技术",
+                "grade": 2021,
+                "class_name": "2021211",
+                "email": "2021211001@bupt.edu.cn",
+                "status": "active",
             },
             {
-                'student_id': '2021211002',
-                'name': '王芳',
-                'password': CryptoUtil.hash_password('student123'),
-                'gender': '女',
-                'major': '计算机科学与技术',
-                'grade': 2021,
-                'class_name': '2021211',
-                'email': '2021211002@bupt.edu.cn'
+                "student_id": "2021211002",
+                "name": "王芳",
+                "password": CryptoUtil.hash_password("student123"),
+                "gender": "女",
+                "major": "计算机科学与技术",
+                "grade": 2021,
+                "class_name": "2021211",
+                "email": "2021211002@bupt.edu.cn",
+                "status": "active",
             },
             {
-                'student_id': '2021211003',
-                'name': '张伟',
-                'password': CryptoUtil.hash_password('student123'),
-                'gender': '男',
-                'major': '软件工程',
-                'grade': 2021,
-                'class_name': '2021212',
-                'email': '2021211003@bupt.edu.cn'
+                "student_id": "2021211003",
+                "name": "张伟",
+                "password": CryptoUtil.hash_password("student123"),
+                "gender": "男",
+                "major": "软件工程",
+                "grade": 2021,
+                "class_name": "2021212",
+                "email": "2021211003@bupt.edu.cn",
+                "status": "active",
+            },
+        ]
+
+        for s in demo_students:
+            try:
+                self.insert_data("students", s)
+            except Exception as e:
+                Logger.warning(f"学生 {s['student_id']} 插入失败：{e}")
+
+        # ==========================
+        # 4. 演示课程
+        # ==========================
+        demo_courses = [
+            {
+                "course_id": "CS101",
+                "course_name": "Python程序设计",
+                "credits": 3.0,
+                "hours": 48,
+                "course_type": "专业必修",
+                "department": "计算机学院",
+                "description": "Python 基础与应用",
+                "max_students": 100,
+                "is_public_elective": 0,
+            },
+            {
+                "course_id": "CS102",
+                "course_name": "数据结构",
+                "credits": 4.0,
+                "hours": 64,
+                "course_type": "专业必修",
+                "department": "计算机学院",
+                "description": "数据结构与算法",
+                "max_students": 100,
+                "is_public_elective": 0,
+            },
+            {
+                "course_id": "GE101",
+                "course_name": "艺术欣赏",
+                "credits": 2.0,
+                "hours": 32,
+                "course_type": "通识选修",
+                "department": "人文学院",
+                "description": "通识课程：艺术鉴赏",
+                "max_students": 200,
+                "is_public_elective": 1,
+            },
+        ]
+
+        for c in demo_courses:
+            try:
+                self.insert_data("courses", c)
+            except Exception as e:
+                Logger.warning(f"课程 {c['course_id']} 插入失败：{e}")
+
+        # ==========================
+        # 5. 开课计划（teacher_id 合法）
+        # ==========================
+        demo_offerings = [
+            {
+                "course_id": "CS101",
+                "teacher_id": "2020010001",
+                "semester": "2024-2025-2",
+                "class_time": "周一1-2节，周三3-4节",
+                "classroom": "教三-201",
+                "max_students": 100,
+            },
+            {
+                "course_id": "CS102",
+                "teacher_id": "2020010001",
+                "semester": "2024-2025-2",
+                "class_time": "周二1-2节，周四3-4节",
+                "classroom": "教三-202",
+                "max_students": 100,
+            },
+            {
+                "course_id": "GE101",
+                "teacher_id": "2020010002",
+                "semester": "2024-2025-2",
+                "class_time": "周三晚19:20-20:55",
+                "classroom": "教三-301",
+                "max_students": 200,
             }
         ]
-        
-        for student in students:
-            self.insert_data('students', student)
-        
-        # 3. 添加课程
-        courses = [
-            {
-                'course_id': 'CS101',
-                'course_name': 'Python程序设计',
-                'credits': 3.0,
-                'hours': 48,
-                'course_type': '必修',
-                'department': '计算机学院',
-                'description': 'Python语言基础与应用'
-            },
-            {
-                'course_id': 'CS102',
-                'course_name': '数据结构',
-                'credits': 4.0,
-                'hours': 64,
-                'course_type': '必修',
-                'department': '计算机学院',
-                'description': '数据结构与算法'
-            },
-            {
-                'course_id': 'CS201',
-                'course_name': '数据库原理',
-                'credits': 3.0,
-                'hours': 48,
-                'course_type': '必修',
-                'department': '计算机学院',
-                'description': '数据库系统原理与应用'
-            },
-            {
-                'course_id': 'CS301',
-                'course_name': '机器学习',
-                'credits': 3.0,
-                'hours': 48,
-                'course_type': '选修',
-                'department': '计算机学院',
-                'description': '机器学习基础与应用'
-            }
-        ]
-        
-        for course in courses:
-            self.insert_data('courses', course)
-        
-        # 4. 添加开课计划
-        offerings = [
-            {
-                'course_id': 'CS101',
-                'teacher_id': 'teacher001',
-                'semester': '2024-2025-2',
-                'class_time': '周一1-2节，周三3-4节',
-                'classroom': '教三201',
-                'max_students': 60
-            },
-            {
-                'course_id': 'CS102',
-                'teacher_id': 'teacher001',
-                'semester': '2024-2025-2',
-                'class_time': '周二1-2节，周四3-4节',
-                'classroom': '教三202',
-                'max_students': 60
-            },
-            {
-                'course_id': 'CS201',
-                'teacher_id': 'teacher002',
-                'semester': '2024-2025-2',
-                'class_time': '周三1-2节，周五3-4节',
-                'classroom': '教三203',
-                'max_students': 50
-            },
-            {
-                'course_id': 'CS301',
-                'teacher_id': 'teacher002',
-                'semester': '2024-2025-2',
-                'class_time': '周一5-6节，周三5-6节',
-                'classroom': '教三301',
-                'max_students': 40
-            }
-        ]
-        
-        for offering in offerings:
-            self.insert_data('course_offerings', offering)
-        
-        Logger.info("演示数据初始化完成")
+
+        for o in demo_offerings:
+            try:
+                self.insert_data("course_offerings", o)
+            except Exception as e:
+                Logger.warning(f"开课计划插入失败：{e}")
+
+        Logger.info("🎉 演示数据初始化完成（教师 + 学生 + 课程 + 开课）")
         self.conn.commit()
 
 
@@ -813,4 +841,3 @@ if __name__ == "__main__":
         print(f"  {c['course_id']} - {c['course_name']} - {c['credits']}学分")
     
     db.close()
-
