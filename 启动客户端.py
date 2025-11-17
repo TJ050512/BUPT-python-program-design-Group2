@@ -48,11 +48,11 @@ class ServerConnectDialog:
     def __init__(self, root):
         """初始化连接对话框"""
         self.root = root
-        self.root.title("连接到服务器")
+        self.root.title("连接到服务器 - 北京邮电大学教学管理系统")
         
         # 设置窗口大小和位置
-        window_width = 600
-        window_height = 500
+        window_width = 700
+        window_height = 650
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
         x = (screen_width - window_width) // 2
@@ -72,108 +72,165 @@ class ServerConnectDialog:
     
     def create_widgets(self):
         """创建界面组件"""
-        # 主容器
+        # 主容器 - 使用白色背景
         main_frame = ctk.CTkFrame(self.root, fg_color="white")
-        main_frame.pack(fill="both", expand=True, padx=30, pady=30)
+        main_frame.pack(fill="both", expand=True)
+        
+        # 顶部标题区域 - 蓝色背景
+        header_frame = ctk.CTkFrame(main_frame, fg_color=self.BUPT_BLUE, height=120)
+        header_frame.pack(fill="x", padx=0, pady=0)
+        header_frame.pack_propagate(False)
         
         # 标题
         title_label = ctk.CTkLabel(
-            main_frame,
+            header_frame,
             text="🌐 连接到服务器",
-            font=("Microsoft YaHei UI", 28, "bold"),
-            text_color=self.BUPT_BLUE
+            font=("Microsoft YaHei UI", 32, "bold"),
+            text_color="white",
+            fg_color="transparent"
         )
-        title_label.pack(pady=(0, 10))
+        title_label.pack(pady=(25, 5))
         
         subtitle_label = ctk.CTkLabel(
-            main_frame,
-            text="请输入服务器地址和端口",
+            header_frame,
+            text="请输入服务器地址和端口信息",
             font=("Microsoft YaHei UI", 14),
-            text_color="gray"
+            text_color="white",
+            fg_color="transparent"
         )
-        subtitle_label.pack(pady=(0, 30))
+        subtitle_label.pack(pady=(0, 20))
+        
+        # 内容区域
+        content_frame = ctk.CTkFrame(main_frame, fg_color="white")
+        content_frame.pack(fill="both", expand=True, padx=50, pady=40)
         
         # 表单容器
-        form_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        form_frame.pack(fill="both", expand=True, pady=20)
+        form_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        form_frame.pack(fill="both", expand=True)
         
-        # 服务器地址输入
+        # 服务器地址输入区域
+        host_section = ctk.CTkFrame(form_frame, fg_color="transparent")
+        host_section.pack(fill="x", pady=(0, 25))
+        
         host_label = ctk.CTkLabel(
-            form_frame,
+            host_section,
             text="服务器地址",
-            font=("Microsoft YaHei UI", 14, "bold"),
+            font=("Microsoft YaHei UI", 15, "bold"),
             text_color=self.BUPT_BLUE,
             anchor="w"
         )
-        host_label.pack(fill="x", pady=(0, 5))
+        host_label.pack(fill="x", pady=(0, 8))
         
         self.host_entry = ctk.CTkEntry(
-            form_frame,
-            height=45,
-            font=("Microsoft YaHei UI", 14),
-            placeholder_text="例如: 10.29.100.39 或 localhost"
+            host_section,
+            height=50,
+            font=("Microsoft YaHei UI", 15),
+            placeholder_text="例如: 10.29.100.39 或 localhost",
+            border_color="#CCCCCC",
+            border_width=1,
+            fg_color="white",
+            text_color="black"
         )
-        self.host_entry.pack(fill="x", pady=(0, 5))
+        self.host_entry.pack(fill="x", pady=(0, 8))
         
-        # 提示信息
+        # 提示信息框
+        hint_frame = ctk.CTkFrame(
+            host_section,
+            fg_color="#F0F7FF",
+            corner_radius=5
+        )
+        hint_frame.pack(fill="x", pady=(0, 0))
+        
         host_hint = ctk.CTkLabel(
-            form_frame,
-            text="💡 本机测试: localhost 或 127.0.0.1\n   局域网测试: 输入服务器显示的IP地址",
-            font=("Microsoft YaHei UI", 11),
-            text_color="#666666",
+            hint_frame,
+            text="💡 本机测试: localhost 或 127.0.0.1\n   局域网测试: 输入服务器显示的IP地址（如 10.29.100.39）",
+            font=("Microsoft YaHei UI", 12),
+            text_color="#555555",
             justify="left",
-            anchor="w"
+            anchor="w",
+            fg_color="transparent"
         )
-        host_hint.pack(fill="x", pady=(0, 20))
+        host_hint.pack(fill="x", padx=12, pady=10)
         
-        # 端口输入
+        # 端口输入区域
+        port_section = ctk.CTkFrame(form_frame, fg_color="transparent")
+        port_section.pack(fill="x", pady=(0, 30))
+        
         port_label = ctk.CTkLabel(
-            form_frame,
+            port_section,
             text="端口号",
-            font=("Microsoft YaHei UI", 14, "bold"),
+            font=("Microsoft YaHei UI", 15, "bold"),
             text_color=self.BUPT_BLUE,
             anchor="w"
         )
-        port_label.pack(fill="x", pady=(0, 5))
+        port_label.pack(fill="x", pady=(0, 8))
         
         self.port_entry = ctk.CTkEntry(
-            form_frame,
-            height=45,
-            font=("Microsoft YaHei UI", 14),
-            placeholder_text="默认: 8888"
+            port_section,
+            height=50,
+            font=("Microsoft YaHei UI", 15),
+            placeholder_text="默认: 8888",
+            border_color="#CCCCCC",
+            border_width=1,
+            fg_color="white",
+            text_color="black"
         )
         self.port_entry.insert(0, "8888")  # 默认端口
-        self.port_entry.pack(fill="x", pady=(0, 5))
+        self.port_entry.pack(fill="x", pady=(0, 8))
+        
+        port_hint_frame = ctk.CTkFrame(
+            port_section,
+            fg_color="#F0F7FF",
+            corner_radius=5
+        )
+        port_hint_frame.pack(fill="x")
         
         port_hint = ctk.CTkLabel(
-            form_frame,
-            text="💡 使用服务器启动时显示的端口号",
-            font=("Microsoft YaHei UI", 11),
-            text_color="#666666",
-            anchor="w"
+            port_hint_frame,
+            text="💡 使用服务器启动时显示的端口号（默认: 8888）",
+            font=("Microsoft YaHei UI", 12),
+            text_color="#555555",
+            anchor="w",
+            fg_color="transparent"
         )
-        port_hint.pack(fill="x", pady=(0, 30))
+        port_hint.pack(fill="x", padx=12, pady=10)
         
-        # 连接按钮
+        # 按钮区域
+        button_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
+        button_frame.pack(fill="x", pady=(20, 0))
+        
+        # 连接按钮 - 主要按钮，更大更醒目
         connect_button = ctk.CTkButton(
-            form_frame,
-            text="连接服务器",
-            height=50,
-            font=("Microsoft YaHei UI", 16, "bold"),
+            button_frame,
+            text="🔗 连接服务器",
+            height=55,
+            font=("Microsoft YaHei UI", 18, "bold"),
             fg_color=self.BUPT_BLUE,
             hover_color=self.BUPT_LIGHT_BLUE,
+            text_color="white",
+            corner_radius=8,
             command=self.do_connect
         )
-        connect_button.pack(fill="x", pady=(0, 10))
+        connect_button.pack(fill="x", pady=(0, 15))
         
-        # 本地模式按钮
+        # 分隔线
+        separator = ctk.CTkFrame(
+            button_frame,
+            fg_color="#E0E0E0",
+            height=1
+        )
+        separator.pack(fill="x", pady=(0, 15))
+        
+        # 本地模式按钮 - 次要按钮
         local_button = ctk.CTkButton(
-            form_frame,
-            text="本地模式（使用本地数据库）",
+            button_frame,
+            text="💻 本地模式（使用本地数据库）",
             height=50,
-            font=("Microsoft YaHei UI", 14),
+            font=("Microsoft YaHei UI", 15),
             fg_color="#6C757D",
             hover_color="#5A6268",
+            text_color="white",
+            corner_radius=8,
             command=self.use_local_mode
         )
         local_button.pack(fill="x")
