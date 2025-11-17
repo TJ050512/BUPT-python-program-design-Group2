@@ -47,7 +47,7 @@ class TeacherWindow:
         self.grade_manager = GradeManager(db)
         
         # 当前学期
-        self.current_semester = "2024-2025-2"
+        self.current_semester = "2024-2025-1"
         
         # 设置窗口
         self.root.title(f"北京邮电大学教学管理系统 - 教师端 - {user.name}")

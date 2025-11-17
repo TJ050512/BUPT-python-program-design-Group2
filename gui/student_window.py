@@ -44,7 +44,7 @@ class StudentWindow:
         self.grade_manager = GradeManager(db)
         
         # 当前学期
-        self.current_semester = "2024-2025-2"
+        self.current_semester = "2024-2025-1"
         
         # 设置窗口
         self.root.title(f"北京邮电大学教学管理系统 - 学生端 - {user.name}")
@@ -155,6 +155,7 @@ class StudentWindow:
         menus = [
             ("📚 我的选课", self.show_my_courses),
             ("🔍 课程选课", self.show_course_selection),
+            ("📋 培养方案", self.show_curriculum),
             ("📊 我的成绩", self.show_my_grades),
             ("📅 我的课表", self.show_my_schedule),
             ("👤 个人信息", self.show_personal_info)
@@ -566,7 +567,7 @@ class StudentWindow:
     
     def show_my_grades(self):
         """显示我的成绩"""
-        self.set_active_menu(2)
+        self.set_active_menu(3)
         self.clear_content()
         
         Logger.info(f"学生查看成绩: {self.user.name} ({self.user.id})")
@@ -669,7 +670,7 @@ class StudentWindow:
     
     def show_my_schedule(self):
         """显示我的课表"""
-        self.set_active_menu(3)
+        self.set_active_menu(4)
         self.clear_content()
         
         Logger.info(f"学生查看课表: {self.user.name} ({self.user.id})")
@@ -971,7 +972,7 @@ class StudentWindow:
     
     def show_personal_info(self):
         """显示个人信息"""
-        self.set_active_menu(4)
+        self.set_active_menu(5)
         self.clear_content()
         
         title = ctk.CTkLabel(
@@ -1017,6 +1018,134 @@ class StudentWindow:
                 text_color="black"
             )
             value_label.pack(side="left", padx=20, pady=15)
+    
+    def show_curriculum(self):
+        """显示培养方案"""
+        self.set_active_menu(2)
+        self.clear_content()
+        
+        title = ctk.CTkLabel(
+            self.content_frame,
+            text="培养方案",
+            font=("Microsoft YaHei UI", 26, "bold"),
+            text_color=self.BUPT_BLUE
+        )
+        title.pack(pady=20, anchor="w", padx=20)
+        
+        # 获取学生专业
+        major_name = self.user.extra_info.get('major', '')
+        if not major_name:
+            no_data_label = ctk.CTkLabel(
+                self.content_frame,
+                text="无法获取您的专业信息，请联系管理员",
+                font=("Microsoft YaHei UI", 16),
+                text_color="#666666"
+            )
+            no_data_label.pack(pady=50)
+            return
+        
+        # 查询培养方案
+        sql = """
+            SELECT cm.grade, cm.term, cm.course_id, c.course_name, 
+                   c.credits, cm.category
+            FROM curriculum_matrix cm
+            JOIN majors m ON cm.major_id = m.major_id
+            JOIN courses c ON cm.course_id = c.course_id
+            WHERE m.name = ?
+            ORDER BY cm.grade, cm.term, cm.category DESC, cm.course_id
+        """
+        
+        curriculum_data = self.db.execute_query(sql, (major_name,))
+        
+        if not curriculum_data:
+            no_data_label = ctk.CTkLabel(
+                self.content_frame,
+                text=f"未找到【{major_name}】专业的培养方案数据",
+                font=("Microsoft YaHei UI", 16),
+                text_color="#666666"
+            )
+            no_data_label.pack(pady=50)
+            return
+        
+        # 使用表格显示（性能更好）
+        table_frame = ctk.CTkFrame(self.content_frame, corner_radius=10)
+        table_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        # 表格样式
+        style = ttk.Style()
+        style.configure("Curriculum.Treeview", 
+                       font=("Microsoft YaHei UI", 13), 
+                       rowheight=35,
+                       background="white",
+                       foreground="black",
+                       fieldbackground="white")
+        style.configure("Curriculum.Treeview.Heading", 
+                       font=("Microsoft YaHei UI", 14, "bold"),
+                       background="#E8F4F8",
+                       foreground=self.BUPT_BLUE,
+                       relief="flat")
+        style.map("Curriculum.Treeview.Heading",
+                 background=[("active", "#D0E8F0")])
+        
+        # 创建表格
+        tree = ttk.Treeview(
+            table_frame,
+            columns=("semester", "course_id", "course_name", "credits", "category"),
+            show="headings",
+            style="Curriculum.Treeview",
+            height=20
+        )
+        
+        # 设置列标题
+        tree.heading("semester", text="学期")
+        tree.heading("course_id", text="课程代码")
+        tree.heading("course_name", text="课程名称")
+        tree.heading("credits", text="学分")
+        tree.heading("category", text="类型")
+        
+        # 设置列宽
+        tree.column("semester", width=120, anchor="center")
+        tree.column("course_id", width=100, anchor="center")
+        tree.column("course_name", width=400, anchor="w")
+        tree.column("credits", width=80, anchor="center")
+        tree.column("category", width=80, anchor="center")
+        
+        # 添加滚动条
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        # 插入数据到表格
+        for record in curriculum_data:
+            grade = record['grade']
+            term = record['term']
+            course_id = record['course_id']
+            course_name = record['course_name']
+            credits = record['credits']
+            category = record['category']
+            
+            # 学期名称
+            term_cn = "秋季" if term == "fall" else "春季"
+            grade_cn = {1: "一", 2: "二", 3: "三", 4: "四"}.get(grade, str(grade))
+            semester_text = f"大{grade_cn}（{term_cn}）"
+            
+            # 插入数据
+            tag = "required" if category == "必修" else "elective"
+            tree.insert("", "end", values=(
+                semester_text,
+                course_id,
+                course_name,
+                f"{credits}",
+                category
+            ), tags=(tag,))
+        
+        # 设置标签颜色
+        tree.tag_configure("required", foreground="#E74C3C")
+        tree.tag_configure("elective", foreground="#3498DB")
+        
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        Logger.info(f"学生查看培养方案: {self.user.name} ({major_name})")
     
     def do_logout(self):
         """注销登录"""
