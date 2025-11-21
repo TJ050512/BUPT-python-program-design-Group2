@@ -233,6 +233,23 @@ def build_course_pool() -> Dict[str, Dict[str, Any]]:
     add("IC202", "产品开发与项目管理",         2.0, 32, "学科基础", "国际学院")
     add("IC301", "人工智能法律",   2.0, 32, "专业选修", "国际学院")
 
+     # ============================
+    # 🔥 统一调整课程学分分布：
+    #    - 98% = 2 学分
+    #    - 2% = 随机 1 或 3 学分
+    # ============================
+    import random
+    for cid, info in pool.items():
+        # 98% → 两连节
+        if random.random() < 0.98:
+            info["credits"] = 2.0
+            info["hours"] = 32   # 2 节 * 45 分钟 ~= 32 学时
+        else:
+            # 2% → 1 或 3
+            c = random.choice([1, 3])
+            info["credits"] = float(c)
+            info["hours"] = 16 if c == 1 else 48   # 1节=16学时，3节=48学时
+
     return pool
 
 
@@ -768,7 +785,8 @@ def create_offerings(db: DBAdapter, semester: str, all_semesters: List[str]) -> 
         SELECT os.slot_id, os.classroom_id, o.teacher_id
         FROM offering_sessions os
         JOIN course_offerings o ON os.offering_id = o.offering_id
-    """)
+        WHERE o.semester = ?
+    """, (semester,))
     for s in occupied_sessions:
         schedule_state_room.add((s["slot_id"], s["classroom_id"]))
         schedule_state_teacher.add((s["teacher_id"], s["slot_id"]))
@@ -1105,7 +1123,9 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
     """
     新版选课逻辑：
     - 每个学生只从【本专业必修 + 公共基础课 + 公选课】中选
-    - 🎯 整合修复：合格成绩过滤，时间冲突检查
+    - 只把“合格成绩(>=60 或 A~D)”视为已修
+    - ✅ 所有课程选课时都做时间冲突检查，保证学生个人课表无冲突
+    - ✅ 公共必修按推荐年级分配，不会出现大三还在修《大学英语1》的情况
     """
 
     # 1. 预取学生、专业、课程、开课信息
@@ -1114,22 +1134,19 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
         Logger.warning("没有学生数据，跳过选课")
         return
 
-    # 1.1 🎯 修复：只将“合格”成绩的课程视为已修 (防止历史重复选课问题)
+    # 1.1 只将“合格”成绩的课程视为已修 (防止历史重复选课问题)
     qualified_grades = db.execute_query("""
         SELECT e.student_id, o.course_id
         FROM enrollments e
         JOIN course_offerings o ON e.offering_id = o.offering_id
         LEFT JOIN grades g ON e.enrollment_id = g.enrollment_id
-        -- 筛选合格成绩：分数 >= 60 或等级为合格
+        -- 筛选合格成绩：分数 >= 60 或等级为 A~D
         WHERE g.score >= 60 OR g.grade_level IN ('A', 'B', 'C', 'D')
     """)
-    
     # 集合中只包含合格的 (sid, cid) 对
     taken_courses = {(row["student_id"], row["course_id"]) for row in qualified_grades}
 
-    # 预取本学期所有已存在的选课记录 (用于数据库触发器校验)
-    # 此处只用于检查数据库触发器是否正常工作，逻辑上已通过 taken_courses 过滤
-
+    # 预取专业列表
     majors = db.execute_query("SELECT major_id, name, college_code FROM majors")
     if not majors:
         Logger.warning("没有专业数据，跳过选课")
@@ -1167,13 +1184,14 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
     # 🎯 辅助函数：获取一个 offering 的所有 slot_id
     def get_offering_slots(oid: int) -> Set[int]:
         slots = db.execute_query(
-            "SELECT slot_id FROM offering_sessions WHERE offering_id=?", 
+            "SELECT slot_id FROM offering_sessions WHERE offering_id=?",
             (oid,)
         )
         return {s["slot_id"] for s in slots}
-    
+
     # 辅助函数：检查新课程是否与已选课程时间冲突
     def check_conflict(new_offering_slots: Set[int], existing_slots: Set[int]) -> bool:
+        """有交集返回 True = 冲突"""
         return bool(new_offering_slots.intersection(existing_slots))
 
     # 为提高效率，预取 program_courses + 课程类型信息
@@ -1199,7 +1217,8 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
         if not mid:
             continue
 
-        academic_year = _get_academic_year(grade, semester)  # 大一=1，大二=2...
+        # 当前学期，这个年级是大几（1~4）
+        academic_year = _get_academic_year(grade, semester)
 
         # 🎯 获取该学生当前学期所有已选 slot_id (用于时间冲突检查)
         current_enrollments = db.execute_query("""
@@ -1209,31 +1228,34 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
             JOIN offering_sessions os ON o.offering_id = os.offering_id
             WHERE e.student_id = ? AND e.semester = ?
         """, (sid, semester))
-        
-        current_slots = {row["slot_id"] for row in current_enrollments}
-        
-        # ... (确定 required_courses 和 public_elective_courses 逻辑保持不变) ...
 
-        # 确定 required_courses, public_elective_courses 逻辑 (保留您的原有逻辑)
+        current_slots: Set[int] = {row["slot_id"] for row in current_enrollments}
+
+        # 2.1 确定 required_courses, public_elective_courses
         pc_list = programs_by_major.get(mid, [])
         required_courses: List[str] = []
         public_elective_courses: List[str] = []
+
         for row in pc_list:
             cid = row["course_id"]
-            cat = row["course_category"]
-            rec_year = row["grade_recommendation"]
-            ctype = row["course_type"]
+            cat = row["course_category"]              # 必修 / 选修
+            rec_year = row["grade_recommendation"]    # 推荐年级 (1~4)
+            ctype = row["course_type"]                # 公共必修 / 专业必修 / 通识选修 等
             is_pub_elect = row.get("is_public_elective", 0)
 
+            # ✅ 公共必修：只在推荐年级那一年算作必修
+            #    例如 EN101 推荐年级=1 → 只给大一当必修；大二、大三不会再修
             if ctype == "公共必修":
-                if academic_year == 1 and cat == "必修":
+                if cat == "必修" and rec_year == academic_year:
                     required_courses.append(cid)
                 continue
 
+            # ✅ 专业课等：推荐年级 == 当前年级，且是“必修”
             if cat == "必修" and rec_year == academic_year:
                 required_courses.append(cid)
                 continue
 
+            # ✅ 公选 / 通识选修：只放到“可选公选课池”，后面按数量随机选
             if is_pub_elect == 1:
                 public_elective_courses.append(cid)
 
@@ -1241,44 +1263,53 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
         required_courses = list(dict.fromkeys(required_courses))
         public_elective_courses = list(dict.fromkeys(public_elective_courses))
 
+        # 组装本学期“打算给这个学生修的课程列表”
         to_take_courses: List[str] = list(required_courses)
 
+        # 公选课按上限加几门
         if public_elective_courses and max_public_electives_per_student > 0:
             k = min(max_public_electives_per_student, len(public_elective_courses))
             extra = random.sample(public_elective_courses, k=k)
             to_take_courses.extend(extra)
 
-        # 过滤掉已合格修过的课程 (使用修复后的 taken_courses)
+        # 过滤掉“已经合格修过”的课程
         to_take_courses = [
             cid for cid in to_take_courses
             if (sid, cid) not in taken_courses
         ]
         to_take_courses = list(dict.fromkeys(to_take_courses))
 
-
-        # 3. 把 “课程ID” 映射成 “开课实例 offering_id”，并写入 enrollments
+        # 2.2 把 “课程ID” 映射成 “开课实例 offering_id”，并写入 enrollments
         for cid in to_take_courses:
-            
+
             # 🎯 嵌套函数：给某个课程挑一个不冲突、有余量的开课实例
             def pick_non_conflicting_offering(cid: str) -> Optional[int]:
                 offs = offerings_by_course.get(cid, [])
                 random.shuffle(offs)
-                
+
                 for o in offs:
                     oid = o["offering_id"]
                     cap = o.get("max_students") or 60
                     cur = offering_current_counts.get(oid, 0)
-                    
-                    if cur < cap: # 检查容量
-                        new_slots = get_offering_slots(oid)
-                        if not check_conflict(new_slots, current_slots): # 🎯 检查时间冲突
-                            return oid
+
+                    # 已满员，跳过
+                    if cur >= cap:
+                        continue
+
+                    # 取出该开课实例的所有节次
+                    new_slots = get_offering_slots(oid)
+
+                    # ✅ 所有课程（必修 / 选修 / 公选）都要做时间冲突检查：
+                    #    “学生不能选择和已有已选课程时间冲突的课程”
+                    if not check_conflict(new_slots, current_slots):
+                        return oid
+
                 return None
-            
+
             oid = pick_non_conflicting_offering(cid)
-            
+
             if not oid:
-                # 本学期该课程没开，或者满员/时间冲突了
+                # 本学期该课程没开，或者都满员/时间冲突了
                 continue
 
             try:
@@ -1288,19 +1319,16 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
                     "semester": semester
                 })
                 offering_current_counts[oid] = offering_current_counts.get(oid, 0) + 1
-                
+
                 # 🎯 选课成功后，将新课程的 slot_id 加入当前学生的 current_slots 集合
                 new_slots = get_offering_slots(oid)
                 current_slots.update(new_slots)
-                
-                # 标记这名学生已经修过这门课 (用于防止重复插入，但逻辑上应该被 taken_courses 过滤)
-                # taken_courses.add((sid, cid)) 
-                
+
             except Exception as e:
                 # 如果数据库触发器阻止了，会在这里报错
                 Logger.warning(f"学生 {sid} 选课 {cid} (offering {oid}) 失败: {e}")
 
-    # 4. 最后统一刷新 course_offerings.current_students
+    # 3. 最后统一刷新 course_offerings.current_students
     try:
         db.execute_update(
             "UPDATE course_offerings SET current_students = "
@@ -1309,7 +1337,7 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
     except Exception as e:
         Logger.warning(f"更新 course_offerings.current_students 失败: {e}")
 
-    Logger.info("✅ 新版选课逻辑执行完成：按专业+年级+公共课/公选课分配。")
+    Logger.info("✅ 新版选课逻辑执行完成：按专业+年级+公共课/公选课分配，且学生课表无时间冲突。")
 
 
 def assign_grades(db: DBAdapter):
@@ -1729,21 +1757,27 @@ def seed_program_courses(db: DBAdapter):
                 db.execute_update("INSERT OR IGNORE INTO program_courses(major_id,course_id,course_category,grade_recommendation) VALUES(?,?,?,?)",
                                   (mid, course_id, '必修', grade_rec))
                 
-        # --- 3. 专业特色课和高年级选修绑定 (按学院或专业名) ---
+        # --- 3. 专业特色课和高年级选修绑定 (按学院绑定所有专业) ---
         if ccode in COLLEGE_SPECIALTY_MAP:
             for course_id, grade_rec, category in COLLEGE_SPECIALTY_MAP[ccode]:
-                # 检查专业名，对同学院不同专业进行微调 (例如软件工程和计算机科学与技术)
+
+                # 默认分类（按学院设定）
                 current_category = category
                 quota = 0
-                
+
+                # --- 特殊专业微调 ---
                 if "软件工程" in mname and course_id == "CS302":
-                    # 软件工程专业把操作系统设为选修，计算机科学与技术专业设为必修
+                    # 软件工程专业把操作系统改成选修
                     current_category = '选修'
-                    quota = 10 # 软件工程可选修
-                
-                # 插入专业课程
-                db.execute_update("INSERT OR IGNORE INTO program_courses(major_id,course_id,course_category,cross_major_quota,grade_recommendation) VALUES(?,?,?,?,?)",
-                                  (mid, course_id, current_category, quota, grade_rec))
+                    quota = 10  
+
+                # === 关键：确保专业课一定进入 program_courses ===
+                db.execute_update("""
+                    INSERT OR IGNORE INTO program_courses(
+                        major_id, course_id, course_category,
+                        cross_major_quota, grade_recommendation
+                    ) VALUES (?, ?, ?, ?, ?)
+                """, (mid, course_id, current_category, quota, grade_rec))
 
         # --- 4. 公共选修课绑定 (所有专业) ---
         for course_id, grade_rec in GLOBAL_COURSE_MAP["GENERAL_ELECTIVE"]:
@@ -1824,6 +1858,8 @@ def seed_all(db: DBAdapter, students: int = 200, teachers: int = 10, semester: s
     db.execute_update("DELETE FROM grades")
 
     for sem in SEMESTERS:
+        db.execute_update("DELETE FROM offering_sessions")
+        db.execute_update("DELETE FROM course_offerings WHERE semester=?", (sem,))
         Logger.info(f"🟦 正在生成学期 {sem} 的开课 与 选课数据...")
 
         create_offerings(db, sem, SEMESTERS)
