@@ -12,7 +12,7 @@ import random
 import hashlib
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, Any, List, Dict
+from typing import Optional, Any, List, Dict, Set, Tuple
 from faker import Faker
 faker = Faker("zh_CN")
 import numpy as np
@@ -28,6 +28,22 @@ from utils.logger import Logger
 # 使用 data.database.Database
 DBAdapter = None
 from data.database import Database as NativeDatabase  # type: ignore
+
+DEPT_NORMALIZE_MAP = {
+    "理学院": "理学院",
+    "马克思主义学院": "马克思主义学院",
+    "体育部": "体育部",
+    "外语学院": "外语学院",
+    "人文学院": "人文学院",
+
+    "计算机学院": "计算机学院",
+    "信息与通信工程学院": "信息与通信工程学院",
+    "电子工程学院": "电子工程学院",
+    "现代邮政学院": "现代邮政学院",
+    "网络空间安全学院": "网络空间安全学院",
+    "人工智能学院": "人工智能学院",
+    "国际学院": "国际学院",
+}
 
 # ===== 学院 → 专业池（示例贴近 BUPT，可根据官方专业目录再增减）=====
 COLLEGE_CATALOG = [
@@ -69,7 +85,7 @@ def build_course_pool() -> Dict[str, Dict[str, Any]]:
             "credits": credits,
             "hours": hours,
             "type": ctype,
-            "dept": dept,
+            "dept": DEPT_NORMALIZE_MAP.get(dept, dept),
             "is_public": is_public,
         }
 
@@ -340,8 +356,18 @@ def create_teachers(db: DBAdapter, n: int = 10):
 
     # 学院池（可继续扩展）
     departments = [
-        "国际学院", "计算机学院", "现代邮政学院", "电子工程学院",
-        "人工智能学院", "信息与通信工程学院", "未来学院", "人文学院"
+        "理学院",
+        "马克思主义学院",
+        "体育部",
+        "外语学院",
+        "人文学院",
+        "计算机学院",
+        "信息与通信工程学院",
+        "电子工程学院",
+        "现代邮政学院",
+        "网络空间安全学院",
+        "人工智能学院",
+        "国际学院",
     ]
 
     # 职称、岗位类型、职级映射（保留你之前的增强）
@@ -657,34 +683,11 @@ def _calc_offering_count_by_attr(course_row: Dict[str, Any], semester: str) -> i
 TITLE_ORDER = {"讲师": 0, "副教授": 1, "教授": 2}
 
 # ================= 课程 → 哪个学院上课 =================
-def resolve_teacher_dept(course_row: dict) -> str:
-    cid = course_row["course_id"]
-    ctype = course_row.get("course_type") or ""
-    dept  = course_row.get("department") or ""
-
-    # 1) 公共必修里的 思政、英语、数学、体育 → 人文学院老师上
-    if ctype == "公共必修" and dept in ("马克思主义学院", "外语学院", "理学院", "体育部"):
-        return "人文学院"
-
-    # 2) 英语课直接归人文学院
-    if cid.startswith("EN10"):
-        return "人文学院"
-
-    # 3) 通识选修 GE***
-    if cid.startswith("GE"):
-        return "人文学院"
-
-    # 4) 理工公选课
-    sci_public_map = {
-        "AI310": "人工智能学院",
-        "CS410": "计算机学院",
-        "EE410": "电子工程学院",
-    }
-    if cid in sci_public_map:
-        return sci_public_map[cid]
-
-    # 5) 其他课程 → 原学院
-    return dept
+def resolve_teacher_dept(course_row):
+    """
+    返回课程应该由哪个学院授课（直接使用课程的 department）
+    """
+    return course_row.get("department")
 
 
 def build_unique_course_semester_plan(db: DBAdapter, SEM_LIST: List[str]) -> Dict[str, str]:
@@ -749,19 +752,33 @@ def build_unique_course_semester_plan(db: DBAdapter, SEM_LIST: List[str]) -> Dic
 
 def create_offerings(db: DBAdapter, semester: str, all_semesters: List[str]) -> list[int]:
     """
-    模式 B：按课程属性决定本学期开设多少个班级（course_offerings）
-
-    - 使用 courses 表中的所有课程作为课程池
-    - 根据 course_type / is_public_elective 决定 parallel 班级数量
-    - 按学院自动匹配授课教师（teachers.department == courses.department）
-    - 从已有的 classrooms / time_slots 中随机选一个教室 + 节次绑定到 offering_sessions
+    开课 + 排课（连续节次版本）：
+    - 每门课本学期开设若干个班（数量由 _calc_offering_count_by_attr 决定）
+    - 每个班：
+        * 每周节次数 = 学分 (int)
+        * 所有节次安排在同一天、同一教室、连续的 section_no
+        * 公选课只排在晚上 (EVENING)
     """
-    # === 一次性构建“唯一学期开课计划” ===
+    # 维护冲突状态
+    schedule_state_room: Set[Tuple[int, int]] = set()    # (slot_id, classroom_id)
+    schedule_state_teacher: Set[Tuple[str, int]] = set() # (teacher_id, slot_id)
+
+    # 把已存在的排课读进内存状态
+    occupied_sessions = db.execute_query("""
+        SELECT os.slot_id, os.classroom_id, o.teacher_id
+        FROM offering_sessions os
+        JOIN course_offerings o ON os.offering_id = o.offering_id
+    """)
+    for s in occupied_sessions:
+        schedule_state_room.add((s["slot_id"], s["classroom_id"]))
+        schedule_state_teacher.add((s["teacher_id"], s["slot_id"]))
+
+    # 唯一学期开课计划（每门课在哪个学期开）
     course_sem_plan = build_unique_course_semester_plan(db, all_semesters)
 
-    # 1. 预取所有课程
+    # 所有课程
     courses = db.execute_query(
-        "SELECT course_id, course_name, course_type, department, "
+        "SELECT course_id, course_name, course_type, department, credits, "
         "COALESCE(is_public_elective,0) AS is_public_elective "
         "FROM courses"
     )
@@ -769,132 +786,228 @@ def create_offerings(db: DBAdapter, semester: str, all_semesters: List[str]) -> 
         Logger.warning("⚠️ courses 表为空，无法生成开课记录。")
         return []
 
-    # 2. 按学院预取教师池
+    # 教师按学院分组
     teacher_rows = db.execute_query(
-        "SELECT teacher_id, name, department, title "
-        "FROM teachers WHERE status='active'"
+        "SELECT teacher_id, name, department, title FROM teachers WHERE status='active'"
     )
     teacher_by_dept: Dict[str, List[Dict[str, Any]]] = {}
     for t in teacher_rows:
         teacher_by_dept.setdefault(t["department"], []).append(t)
 
-    # 若某学院没有老师，后面会尝试用全校兜底老师
     all_teachers = list(teacher_rows)
-
     if not all_teachers:
         Logger.warning("⚠️ 没有教师数据，无法生成开课记录。")
         return []
 
-    # 3. 预取所有教室、节次
-    classrooms = db.execute_query(
-        "SELECT classroom_id, name FROM classrooms"
-    )
-    timeslots = db.execute_query(
-        "SELECT slot_id, day_of_week, section_no, session "
-        "FROM time_slots"
-    )
-    timeslots_evening = [t for t in timeslots if t['session'] == 'EVENING']
+    # 所有教室、节次
+    classrooms = db.execute_query("SELECT classroom_id, name, room_type FROM classrooms")
+    timeslots = db.execute_query("SELECT slot_id, day_of_week, section_no, session FROM time_slots")
+    if not classrooms or not timeslots:
+        Logger.warning("⚠️ 教室或节次数据缺失，无法排课。")
+        return []
 
-    if not classrooms:
-        Logger.warning("⚠️ 没有教室数据，将仍然创建 course_offerings 但不绑定上课教室。")
-    if not timeslots:
-        Logger.warning("⚠️ 没有节次数据，将仍然创建 course_offerings 但不绑定上课时间。")
+    # 按 day_of_week + session 分组节次，方便找连续 section_no
+    # timeslots_by_day_session[day][session] = [slot_row,...] 已按 section_no 排序
+    timeslots_by_day_session: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
+    for ts in timeslots:
+        d = ts["day_of_week"]
+        sess = ts["session"]
+        timeslots_by_day_session.setdefault(d, {}).setdefault(sess, []).append(ts)
+    for d in timeslots_by_day_session:
+        for sess in timeslots_by_day_session[d]:
+            timeslots_by_day_session[d][sess].sort(key=lambda x: x["section_no"])
 
     offering_ids: List[int] = []
 
-    # 4. 为每一门课程按属性开出多个班
+    # 小工具：根据课程属性选择可用教室
+    def find_valid_rooms(course_type: str, cid: str, is_public: int) -> List[Dict[str, Any]]:
+        general_rooms = [r for r in classrooms if r.get("room_type") in ("普通教室", "智慧教室")]
+        if course_type == "公共必修" and cid.startswith("PE"):
+            rooms = [r for r in classrooms if r.get("room_type") == "体育馆"]
+        elif course_type in ("学科基础", "专业必修") and cid.startswith(("CM", "CS")):
+            rooms = [r for r in classrooms if r.get("room_type") in ("机房", "普通教室", "智慧教室")]
+        elif course_type == "通识选修" and is_public == 1:
+            rooms = [r for r in classrooms if r.get("room_type") in ("报告厅", "普通教室", "智慧教室")]
+        else:
+            rooms = general_rooms
+        if not rooms:
+            rooms = general_rooms
+        return rooms
+
+    # 核心：为一个班找“同一天、同一 session、连续 N 节”的时段 + 一个教室
+    def assign_continuous_block(
+        teacher_id: str,
+        needed: int,
+        is_public: int,
+        valid_rooms: List[Dict[str, Any]]
+    ) -> List[Tuple[int, int, str]]:
+        """
+        返回 [(slot_id, classroom_id, room_name), ...] 长度 = needed
+        如果找不到则返回空列表。
+        """
+        # 公选课只排晚上
+        session_pool = ["EVENING"] if is_public == 1 else ["AM", "PM"]
+
+        days = list(range(1, 6))  # 周一到周五
+        random.shuffle(days)
+
+        for day in days:
+            for sess in random.sample(session_pool, len(session_pool)):
+                slot_list = timeslots_by_day_session.get(day, {}).get(sess, [])
+                if not slot_list:
+                    continue
+
+                # 过滤掉教师已经占用的节次
+                available_slots = [
+                    s for s in slot_list
+                    if (teacher_id, s["slot_id"]) not in schedule_state_teacher
+                ]
+                if len(available_slots) < needed:
+                    continue
+
+                # 找连续 section_no 的长度为 needed 的窗口
+                available_slots.sort(key=lambda x: x["section_no"])
+
+                for i in range(0, len(available_slots) - needed + 1):
+                    cand = available_slots[i:i+needed]
+                    # 检查是否 section_no 连续
+                    ok = True
+                    for j in range(1, len(cand)):
+                        if cand[j]["section_no"] != cand[j-1]["section_no"] + 1:
+                            ok = False
+                            break
+                    if not ok:
+                        continue
+
+                    # 为这一组连续节次挑一个“全程都空”的教室
+                    random.shuffle(valid_rooms)
+                    for room in valid_rooms:
+                        room_id = room["classroom_id"]
+                        room_name = room["name"]
+
+                        # 检查该教室在所有候选 slot 上是否都空闲
+                        conflict = False
+                        for s in cand:
+                            if (s["slot_id"], room_id) in schedule_state_room:
+                                conflict = True
+                                break
+                        if conflict:
+                            continue
+
+                        # 可以使用这个教室：记录所有节次，并更新冲突状态
+                        assigned: List[Tuple[int, int, str]] = []
+                        for s in cand:
+                            sid = s["slot_id"]
+                            assigned.append((sid, room_id, room_name))
+                            schedule_state_room.add((sid, room_id))
+                            schedule_state_teacher.add((teacher_id, sid))
+                        return assigned
+
+        # 所有 day/session 都尝试过仍然失败
+        return []
+
+    # ==== 正式为每门课开课 + 排课 ====
     for c in courses:
         cid = c["course_id"]
         dept = c.get("department") or ""
         course_type = c.get("course_type") or ""
         is_public = int(c.get("is_public_elective", 0) or 0)
+        credits = c.get("credits", 0)
 
+        # 这门课本来计划开在哪个学期
         expected_sem = course_sem_plan.get(cid)
         if expected_sem != semester:
             continue
-        # 4.1 根据课程属性计算需要开多少个 parallel 班
+
         n_off = _calc_offering_count_by_attr(c, semester)
         if n_off <= 0:
             continue
 
-        # 4.2 找授课教师：优先同学院
-        candidates = teacher_by_dept.get(dept, [])
-        if not candidates:
-            # 该学院没有老师，用全校兜底
-            candidates = all_teachers
-
-        if not candidates:
-            Logger.warning(f"⚠️ 课程 {cid} 没有可用的教师，跳过。")
+        # 找授课老师（同学院）
+        assigned_dept = resolve_teacher_dept(c)
+        if assigned_dept not in teacher_by_dept:
+            Logger.warning(f"{cid} 找不到该学院教师：{assigned_dept}")
             continue
-
-        # 为了简单，打乱老师列表，轮流使用
+        candidates = teacher_by_dept[assigned_dept]
+        if not candidates:
+            continue
         random.shuffle(candidates)
 
         for i in range(n_off):
             teacher = candidates[i % len(candidates)]
             teacher_id = teacher["teacher_id"]
 
-            # 4.3 创建 course_offerings 记录
-            try:
-                offering_id = db.insert_data("course_offerings", {
-                    "course_id": cid,
-                    "teacher_id": teacher_id,
-                    "semester": semester,
-                    "max_students": 120 if course_type == "公共必修" else 60,
-                    "status": "open",
-                    "department": dept
-                })
-            except Exception as e:
-                Logger.warning(f"创建课程 {cid} 开课记录失败：{e}")
+            # 先插入开课记录（暂不填 class_time/classroom）
+            offering_id = db.insert_data("course_offerings", {
+                "course_id": cid,
+                "teacher_id": teacher_id,
+                "semester": semester,
+                "max_students": 120 if course_type == "公共必修" else 60,
+                "status": "open",
+                "department": dept,
+                "class_time": None,
+                "classroom": None,
+            })
+            if not offering_id:
                 continue
-
             offering_ids.append(int(offering_id))
 
-            # 4.4 为每个班分配助教（同学院优先）
+            # 分配助教（可选）
             try:
                 assign_tas_for_offering(db, offering_id, teacher_id, cid)
             except Exception as e:
                 Logger.debug(f"为开课 {offering_id} 分配助教失败：{e}")
 
-            # 4.5 若有教室/节次，则随机绑定一条 offering_sessions
-            if classrooms and timeslots:
-                room = random.choice(classrooms)
-                
-                # 📌 修正：根据是否公选课，选择节次池
-                if is_public == 1 and timeslots_evening:
-                    # 公选课必须安排在晚间
-                    slot = random.choice(timeslots_evening)
-                else:
-                    # 普通课程从所有节次中随机选择（排除晚间，避免占用公选课的晚间时间）
-                    timeslots_daytime = [t for t in timeslots if t['session'] != 'EVENING']
-                    if timeslots_daytime:
-                         slot = random.choice(timeslots_daytime)
-                    else:
-                         slot = random.choice(timeslots) # 兜底
-                
-                # 检查是否成功选到 slot
-                if 'slot' in locals():
-                    try:
-                        db.execute_update(
-                            "INSERT OR IGNORE INTO offering_sessions(offering_id, slot_id, classroom_id) "
-                            "VALUES(?,?,?)",
-                            (offering_id, slot["slot_id"], room["classroom_id"])
-                        )
-                        
-                        # <<<<<<<<<<<<<<<<< 在这里新增代码 >>>>>>>>>>>>>>>>>
-                        # 📌 步骤 4.5 修复：将可读的时间/教室信息更新回 course_offerings
-                        session_str = _build_session_string(db, slot["slot_id"], room["name"])
-                        db.execute_update(
-                            "UPDATE course_offerings SET class_time=?, classroom=? WHERE offering_id=?",
-                            (session_str, room["name"], offering_id)
-                        )
-                        # <<<<<<<<<<<<<<<<< 新增代码结束 >>>>>>>>>>>>>>>>>
+            # ==== 连续节次排课 ====
+            weekly_sessions_needed = int(credits)
+            if weekly_sessions_needed <= 0:
+                Logger.debug(f"课程 {cid} 学分为 0，跳过排课。")
+                db.execute_update(
+                    "UPDATE course_offerings SET class_time=?, classroom=?, status='pending' WHERE offering_id=?",
+                    ("未排课", None, offering_id)
+                )
+                continue
 
-                    except Exception as e:
-                        # 只有在这里，我们才输出警告，因为这可能是时间和教室冲突
-                        Logger.warning(f"绑定上课时间地点失败 offering={offering_id}, 错误: {e}")
+            valid_rooms = find_valid_rooms(course_type, cid, is_public)
+            if not valid_rooms:
+                Logger.warning(f"课程 {cid} 找不到可用教室，排课失败。")
+                db.execute_update(
+                    "UPDATE course_offerings SET class_time=?, classroom=?, status='pending' WHERE offering_id=?",
+                    ("未排课", None, offering_id)
+                )
+                continue
 
-    Logger.info(f"✅ 模式 B：学期 {semester} 共生成 {len(offering_ids)} 个开课班级。")
+            assigned_sessions = assign_continuous_block(
+                teacher_id=teacher_id,
+                needed=weekly_sessions_needed,
+                is_public=is_public,
+                valid_rooms=valid_rooms
+            )
+
+            if assigned_sessions:
+                # 写入 offering_sessions
+                for slot_id, room_id, room_name in assigned_sessions:
+                    db.execute_update(
+                        "INSERT OR IGNORE INTO offering_sessions(offering_id, slot_id, classroom_id) VALUES(?,?,?)",
+                        (offering_id, slot_id, room_id)
+                    )
+                # 构造 “周X1-2节” 这样的字符串
+                assigned_slot_ids = [s[0] for s in assigned_sessions]
+                room_name = assigned_sessions[0][2]
+                session_str = _build_session_string(db, assigned_slot_ids, room_name)
+
+                db.execute_update(
+                    "UPDATE course_offerings SET class_time=?, classroom=? WHERE offering_id=?",
+                    (session_str, room_name, offering_id)
+                )
+            else:
+                Logger.warning(f"课程 {cid} 在学期 {semester} 排课失败（没有连续 {weekly_sessions_needed} 节可用时段）。")
+                db.execute_update(
+                    "UPDATE course_offerings SET class_time=?, classroom=?, status='pending' WHERE offering_id=?",
+                    ("未排课", None, offering_id)
+                )
+
+    Logger.info(f"✅ 连续节次排课：学期 {semester} 共生成 {len(offering_ids)} 个开课班级。")
     return offering_ids
 
 
@@ -905,23 +1018,62 @@ def _get_timeslot_details(db: DBAdapter) -> Dict[int, Dict]:
     """从数据库加载 time_slots 详情并缓存"""
     global _TIMESLOT_CACHE
     if _TIMESLOT_CACHE is None:
-        slots = db.execute_query("SELECT slot_id, day_of_week, starts_at, ends_at FROM time_slots")
+        slots = db.execute_query("SELECT slot_id, day_of_week, starts_at, ends_at, section_no FROM time_slots")
         _TIMESLOT_CACHE = {s['slot_id']: s for s in slots}
     return _TIMESLOT_CACHE
 
 
-def _build_session_string(db: DBAdapter, slot_id: int, classroom_name: str) -> str:
-    """根据 slot_id 和教室名生成可读的上课时间地点字符串"""
-    slot_details = _get_timeslot_details(db).get(slot_id)
-    if not slot_details:
-        return f"时间未定 ({classroom_name})"
+def _build_session_string(db: DBAdapter, assigned_slots: List[int], classroom_name: str) -> str:
+    """
+    根据分配的 slot_id 列表，生成前端所需的简化的节次文本格式（例如：周一1-2节, 周三5-6节）。
+    """
+    # 获取节次详情
+    slot_details = _get_timeslot_details(db) 
+    
+    # 将分配到的 slot_id 映射到 (day, section_no)
+    day_section_map: Dict[int, List[int]] = {} # key: day_of_week, value: [section_no]
+    
+    for slot_id in assigned_slots:
+        details = slot_details.get(slot_id)
+        if details:
+            day = details['day_of_week']
+            section = details['section_no']
+            day_section_map.setdefault(day, []).append(section)
 
-    day_map = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6: "周六", 7: "周日"}
-    day = day_map.get(slot_details['day_of_week'], "未知")
-    start = slot_details['starts_at'][:-3] # 截去秒
-    end = slot_details['ends_at'][:-3]
+    result_parts = []
+    day_map = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五"}
+    
+    for day in sorted(day_section_map.keys()):
+        sections = sorted(day_section_map[day])
+        
+        # 聚合连续的节次 (例如：[1, 2, 5, 6] -> '1-2节', '5-6节')
+        
+        # 找出连续范围的起始和结束
+        ranges = []
+        if sections:
+            start = sections[0]
+            end = sections[0]
+            for i in range(1, len(sections)):
+                if sections[i] == end + 1:
+                    end = sections[i]
+                else:
+                    ranges.append((start, end))
+                    start = sections[i]
+                    end = sections[i]
+            ranges.append((start, end)) # 添加最后一个范围
 
-    return f"{day} {start}~{end} @ {classroom_name}"
+        day_text = day_map.get(day, f"周{day}")
+        
+        for start_sec, end_sec in ranges:
+            if start_sec == end_sec:
+                # 单节课，例如 周一1节
+                result_parts.append(f"{day_text}{start_sec}节")
+            else:
+                # 连续多节课，例如 周一1-2节
+                result_parts.append(f"{day_text}{start_sec}-{end_sec}节")
+                
+    # 使用英文逗号分隔，这是前端最常见的解析格式
+    return ", ".join(result_parts)
 
 
 def _get_academic_year(student_grade: int, semester: str) -> int:
@@ -953,8 +1105,7 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
     """
     新版选课逻辑：
     - 每个学生只从【本专业必修 + 公共基础课 + 公选课】中选
-    - 公共基础课只在大一学年修读（基于 _get_academic_year 计算）
-    - 每个学生的公选课数量限制为 max_public_electives_per_student（默认最多 2 门）
+    - 🎯 整合修复：合格成绩过滤，时间冲突检查
     """
 
     # 1. 预取学生、专业、课程、开课信息
@@ -963,12 +1114,21 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
         Logger.warning("没有学生数据，跳过选课")
         return
 
-    existed_pairs = db.execute_query("""
+    # 1.1 🎯 修复：只将“合格”成绩的课程视为已修 (防止历史重复选课问题)
+    qualified_grades = db.execute_query("""
         SELECT e.student_id, o.course_id
         FROM enrollments e
         JOIN course_offerings o ON e.offering_id = o.offering_id
+        LEFT JOIN grades g ON e.enrollment_id = g.enrollment_id
+        -- 筛选合格成绩：分数 >= 60 或等级为合格
+        WHERE g.score >= 60 OR g.grade_level IN ('A', 'B', 'C', 'D')
     """)
-    taken_courses = {(row["student_id"], row["course_id"]) for row in existed_pairs}
+    
+    # 集合中只包含合格的 (sid, cid) 对
+    taken_courses = {(row["student_id"], row["course_id"]) for row in qualified_grades}
+
+    # 预取本学期所有已存在的选课记录 (用于数据库触发器校验)
+    # 此处只用于检查数据库触发器是否正常工作，逻辑上已通过 taken_courses 过滤
 
     majors = db.execute_query("SELECT major_id, name, college_code FROM majors")
     if not majors:
@@ -978,13 +1138,18 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
     # 专业名 -> major_id 映射
     major_name_to_id = {m["name"]: m["major_id"] for m in majors}
 
-    # 课程开课（本学期）
+    # 课程开课（本学期，且已经排好课的）
     offerings = db.execute_query(
         "SELECT offering_id, course_id, max_students, "
         "COALESCE(current_students, 0) AS current_students "
-        "FROM course_offerings WHERE semester=?",
+        "FROM course_offerings "
+        "WHERE semester=? "
+        "  AND class_time IS NOT NULL "
+        "  AND class_time <> '未排课' "
+        "  AND status = 'open'",
         (semester,)
     )
+
     if not offerings:
         Logger.warning("没有开课记录，跳过选课")
         return
@@ -999,17 +1164,17 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
     for o in offerings:
         offering_current_counts[o["offering_id"]] = int(o.get("current_students", 0))
 
-    # 辅助函数：给某个课程挑一个有余量的开课实例
-    def pick_offering_for_course(cid: str) -> Optional[int]:
-        offs = offerings_by_course.get(cid, [])
-        random.shuffle(offs)
-        for o in offs:
-            oid = o["offering_id"]
-            cap = o.get("max_students") or 60
-            cur = offering_current_counts.get(oid, 0)
-            if cur < cap:
-                return oid
-        return None
+    # 🎯 辅助函数：获取一个 offering 的所有 slot_id
+    def get_offering_slots(oid: int) -> Set[int]:
+        slots = db.execute_query(
+            "SELECT slot_id FROM offering_sessions WHERE offering_id=?", 
+            (oid,)
+        )
+        return {s["slot_id"] for s in slots}
+    
+    # 辅助函数：检查新课程是否与已选课程时间冲突
+    def check_conflict(new_offering_slots: Set[int], existing_slots: Set[int]) -> bool:
+        return bool(new_offering_slots.intersection(existing_slots))
 
     # 为提高效率，预取 program_courses + 课程类型信息
     program_rows = db.execute_query(
@@ -1032,38 +1197,43 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
 
         mid = major_name_to_id.get(major_name)
         if not mid:
-            # 找不到对应的专业 id，跳过
             continue
 
         academic_year = _get_academic_year(grade, semester)  # 大一=1，大二=2...
 
-        # 该专业的课程配置
-        pc_list = programs_by_major.get(mid, [])
-        if not pc_list:
-            continue
+        # 🎯 获取该学生当前学期所有已选 slot_id (用于时间冲突检查)
+        current_enrollments = db.execute_query("""
+            SELECT os.slot_id
+            FROM enrollments e
+            JOIN course_offerings o ON e.offering_id = o.offering_id
+            JOIN offering_sessions os ON o.offering_id = os.offering_id
+            WHERE e.student_id = ? AND e.semester = ?
+        """, (sid, semester))
+        
+        current_slots = {row["slot_id"] for row in current_enrollments}
+        
+        # ... (确定 required_courses 和 public_elective_courses 逻辑保持不变) ...
 
+        # 确定 required_courses, public_elective_courses 逻辑 (保留您的原有逻辑)
+        pc_list = programs_by_major.get(mid, [])
         required_courses: List[str] = []
         public_elective_courses: List[str] = []
-
         for row in pc_list:
             cid = row["course_id"]
-            cat = row["course_category"]            # '必修' / '选修'
-            rec_year = row["grade_recommendation"]  # 建议修读年级 1~4
-            ctype = row["course_type"]              # '公共必修' / '专业必修' / ...
+            cat = row["course_category"]
+            rec_year = row["grade_recommendation"]
+            ctype = row["course_type"]
             is_pub_elect = row.get("is_public_elective", 0)
 
-            # ① 公共基础课：只在大一学年修读（忽略原来的推荐年级设置）
             if ctype == "公共必修":
                 if academic_year == 1 and cat == "必修":
                     required_courses.append(cid)
-                continue  # 非大一不再修公共基础课
+                continue
 
-            # ② 正常的专业必修：按推荐年级匹配
             if cat == "必修" and rec_year == academic_year:
                 required_courses.append(cid)
                 continue
 
-            # ③ 公选课（通识选修 is_public_elective=1）：作为公选候选
             if is_pub_elect == 1:
                 public_elective_courses.append(cid)
 
@@ -1071,28 +1241,44 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
         required_courses = list(dict.fromkeys(required_courses))
         public_elective_courses = list(dict.fromkeys(public_elective_courses))
 
-        # 对每个学生：所有必修课都选择
         to_take_courses: List[str] = list(required_courses)
 
-        # 公选课：最多从候选中随机选若干门
         if public_elective_courses and max_public_electives_per_student > 0:
             k = min(max_public_electives_per_student, len(public_elective_courses))
             extra = random.sample(public_elective_courses, k=k)
             to_take_courses.extend(extra)
 
-        # 过滤掉这个学生以前已经修过的课程，避免同一门课多次选课
+        # 过滤掉已合格修过的课程 (使用修复后的 taken_courses)
         to_take_courses = [
             cid for cid in to_take_courses
             if (sid, cid) not in taken_courses
         ]
-
         to_take_courses = list(dict.fromkeys(to_take_courses))
+
 
         # 3. 把 “课程ID” 映射成 “开课实例 offering_id”，并写入 enrollments
         for cid in to_take_courses:
-            oid = pick_offering_for_course(cid)
+            
+            # 🎯 嵌套函数：给某个课程挑一个不冲突、有余量的开课实例
+            def pick_non_conflicting_offering(cid: str) -> Optional[int]:
+                offs = offerings_by_course.get(cid, [])
+                random.shuffle(offs)
+                
+                for o in offs:
+                    oid = o["offering_id"]
+                    cap = o.get("max_students") or 60
+                    cur = offering_current_counts.get(oid, 0)
+                    
+                    if cur < cap: # 检查容量
+                        new_slots = get_offering_slots(oid)
+                        if not check_conflict(new_slots, current_slots): # 🎯 检查时间冲突
+                            return oid
+                return None
+            
+            oid = pick_non_conflicting_offering(cid)
+            
             if not oid:
-                # 本学期该课程没开，或者满员了
+                # 本学期该课程没开，或者满员/时间冲突了
                 continue
 
             try:
@@ -1102,9 +1288,16 @@ def enroll_students(db: DBAdapter, semester: str = "2024-2025-2", max_public_ele
                     "semester": semester
                 })
                 offering_current_counts[oid] = offering_current_counts.get(oid, 0) + 1
-                # 标记这名学生已经修过这门课
-                taken_courses.add((sid, cid))
+                
+                # 🎯 选课成功后，将新课程的 slot_id 加入当前学生的 current_slots 集合
+                new_slots = get_offering_slots(oid)
+                current_slots.update(new_slots)
+                
+                # 标记这名学生已经修过这门课 (用于防止重复插入，但逻辑上应该被 taken_courses 过滤)
+                # taken_courses.add((sid, cid)) 
+                
             except Exception as e:
+                # 如果数据库触发器阻止了，会在这里报错
                 Logger.warning(f"学生 {sid} 选课 {cid} (offering {oid}) 失败: {e}")
 
     # 4. 最后统一刷新 course_offerings.current_students
@@ -1149,7 +1342,7 @@ def assign_grades(db: DBAdapter):
 
 def bind_evening_public_offerings(db, semester: str="2024-2025-2"):
     try:
-        # 查 CS301 的 offering
+        # 查本学期所有公选课的 offering_id
         offs = db.execute_query(
             "SELECT o.offering_id FROM course_offerings o "
             "JOIN courses c ON c.course_id=o.course_id "
@@ -1159,23 +1352,36 @@ def bind_evening_public_offerings(db, semester: str="2024-2025-2"):
             return
 
         # 找一个晚间节次与教室
-        slot = db.execute_query("SELECT slot_id FROM time_slots WHERE session='EVENING' ORDER BY slot_id LIMIT 1")
-        room = db.execute_query("SELECT classroom_id FROM classrooms ORDER BY classroom_id LIMIT 1")
-        if not slot or not room:
+        slot_rows = db.execute_query("SELECT slot_id, day_of_week, starts_at, ends_at FROM time_slots WHERE session='EVENING' ORDER BY slot_id LIMIT 1")
+        room_rows = db.execute_query("SELECT classroom_id, name FROM classrooms ORDER BY classroom_id LIMIT 1")
+        
+        if not slot_rows or not room_rows:
             return
-        sid = slot[0]['slot_id']
-        cid = room[0]['classroom_id']
+            
+        slot = slot_rows[0]
+        room = room_rows[0]
+        
+        # 提前生成可读的时间字符串
+        session_str = _build_session_string(db, slot['slot_id'], room['name'])
 
         for o in offs:
+            oid = o['offering_id']
             try:
+                # 1. 插入 offering_sessions (确保排课记录存在)
                 db.execute_update(
                     "INSERT OR IGNORE INTO offering_sessions(offering_id,slot_id,classroom_id) VALUES(?,?,?)",
-                    (o['offering_id'], sid, cid)
+                    (oid, slot['slot_id'], room['classroom_id'])
+                )
+                
+                # 2. 🎯 关键：更新 course_offerings 的 class_time 字段
+                db.execute_update(
+                    "UPDATE course_offerings SET class_time=?, classroom=? WHERE offering_id=?",
+                    (session_str, room['name'], oid)
                 )
             except Exception as e:
-                Logger.warning(f"绑定晚间节次失败 offering={o['offering_id']}: {e}")
-    except Exception:
-        pass
+                Logger.warning(f"绑定晚间节次/更新 class_time 失败 offering={oid}: {e}")
+    except Exception as e:
+        Logger.warning(f"bind_evening_public_offerings 执行失败: {e}")
 
 
 def seed_colleges_and_majors(db: DBAdapter):
@@ -1265,29 +1471,66 @@ def seed_classrooms(db: DBAdapter):
             Logger.warning(f"插入教室失败: {room['name']} - {e}")
 
 
+def seed_timeslots(db: DBAdapter):
+    """
+    根据学校精确时间要求生成 time_slots (14节)。
+    """
+    from datetime import datetime, timedelta
+    
+    def time_add(start_time: str, minutes: int) -> str:
+        t = datetime.strptime(start_time, "%H:%M")
+        t += timedelta(minutes=minutes)
+        return t.strftime("%H:%M")
 
-def seed_timeslots(db):
-    # AM：08:00 起每 45min 一节，休息 5min（节次与休息在业务层体现）
-    def add(day, sec, start, end, session):
-        try:
-            db.execute_update(
-                "INSERT INTO time_slots(day_of_week,section_no,starts_at,ends_at,session) VALUES(?,?,?,?,?)",
-                (day, sec, start, end, session)
-            )
-        except Exception:
-            pass
+    # [节次号, 时长(min), 后续break(min), Session类型, 每天的起始时间]
+    # 我们根据您的描述重新构造精确时间表：
+    TIME_SCHEDULE_DEFINITIONS = [
+        # AM:
+        (1, 45, '08:00', 5, 'AM'),    # 8:00-8:45, break 5min -> next 8:50
+        (2, 45, '08:50', 15, 'AM'),   # 8:50-9:35, break 15min -> next 9:50 (长课间)
+        (3, 45, '09:50', 5, 'AM'),    # 9:50-10:35, break 5min -> next 10:40
+        (4, 45, '10:40', 5, 'AM'),   # 10:40-11:25, break 5min -> next 11:30
+        (5, 45, '11:30', 45, 'AM'),   # 11:30-12:15, break 45min (午休) -> next 13:00
 
-    # 一周 1~5 天示例
+        # PM:
+        (6, 45, '13:00', 5, 'PM'),    # 13:00-13:45, break 5min -> next 13:50
+        (7, 45, '13:50', 10, 'PM'),   # 13:50-14:35, break 10min (长课间) -> next 14:45
+        (8, 45, '14:45', 10, 'PM'),   # 14:45-15:30, break 10min -> next 15:40
+        (9, 45, '15:40', 10, 'PM'),   # 15:40-16:25, break 10min -> next 16:35
+        (10, 45, '16:35', 5, 'PM'),  # 16:35-17:20, break 5min -> next 17:25
+        (11, 45, '17:25', 20, 'PM'), # 17:25-18:10, break 20min (晚饭) -> next 18:30
+        
+        # EVENING:
+        (12, 45, '18:30', 5, 'EVENING'), # 18:30-19:15, break 5min -> next 19:20
+        (13, 45, '19:20', 5, 'EVENING'), # 19:20-20:05, break 5min -> next 20:10
+        (14, 45, '20:10', 0, 'EVENING'), # 20:10-20:55, 结束
+    ]
+    
+    slots_to_add = []
+    
+    # 重新计算起始时间，确保精确匹配您的描述
+    # 由于您的描述中包含了明确的起始时间，我们使用定义的时间
+    
+    for section_no, duration, start_time, break_duration, session in TIME_SCHEDULE_DEFINITIONS:
+        end_time = time_add(start_time, duration)
+        
+        slots_to_add.append({
+            'section_no': section_no,
+            'starts_at': start_time,
+            'ends_at': end_time,
+            'session': session
+        })
+
+    # 插入数据库 (周一到周五)
     for d in range(1, 6):
-        # AM 两节（示例）
-        add(d, 1, '08:00', '08:45', 'AM')
-        add(d, 2, '08:50', '09:35', 'AM')
-        # PM 两节（示例）
-        add(d, 1, '13:00', '13:45', 'PM')
-        add(d, 2, '13:50', '14:35', 'PM')
-        # EVENING 两节（公选课）
-        add(d, 1, '19:20', '20:05', 'EVENING')
-        add(d, 2, '20:10', '20:55', 'EVENING')
+        for slot_data in slots_to_add:
+            try:
+                db.execute_update(
+                    "INSERT INTO time_slots(day_of_week,section_no,starts_at,ends_at,session) VALUES(?,?,?,?,?)",
+                    (d, slot_data['section_no'], slot_data['starts_at'], slot_data['ends_at'], slot_data['session'])
+                )
+            except Exception:
+                pass
 
 
 def seed_program_courses(db: DBAdapter):
