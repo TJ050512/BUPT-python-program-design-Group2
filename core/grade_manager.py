@@ -100,13 +100,12 @@ class GradeManager:
             Logger.error(f"录入成绩失败: {e}")
             return False, "录入成绩失败，请稍后重试"
     
-    def get_student_grades(self, student_id: str, semester: str = None) -> List[Dict]:
+    def get_student_grades(self, student_id: str) -> List[Dict]:
         """
         获取学生成绩
         
         Args:
             student_id: 学号
-            semester: 学期（可选）
         
         Returns:
             成绩列表
@@ -120,7 +119,6 @@ class GradeManager:
                 g.exam_type,
                 g.remarks,
                 g.input_date,
-                co.semester,
                 c.course_id,
                 c.course_name,
                 c.credits,
@@ -132,17 +130,10 @@ class GradeManager:
             JOIN courses c ON co.course_id = c.course_id
             JOIN teachers t ON co.teacher_id = t.teacher_id
             WHERE g.student_id = ?
+            ORDER BY c.course_id
         """
         
-        params = [student_id]
-        
-        if semester:
-            sql += " AND co.semester = ?"
-            params.append(semester)
-        
-        sql += " ORDER BY co.semester DESC, c.course_id"
-        
-        return self.db.execute_query(sql, tuple(params))
+        return self.db.execute_query(sql, (student_id,))
     
     def get_course_grades(self, offering_id: int) -> List[Dict]:
         """
@@ -175,13 +166,12 @@ class GradeManager:
         
         return self.db.execute_query(sql, (offering_id,))
     
-    def calculate_student_gpa(self, student_id: str, semester: str = None) -> float:
+    def calculate_student_gpa(self, student_id: str) -> float:
         """
         计算学生GPA
         
         Args:
             student_id: 学号
-            semester: 学期（可选，不传则计算总GPA）
         
         Returns:
             GPA值
@@ -196,13 +186,7 @@ class GradeManager:
             WHERE g.student_id = ?
         """
         
-        params = [student_id]
-        
-        if semester:
-            sql += " AND co.semester = ?"
-            params.append(semester)
-        
-        result = self.db.execute_query(sql, tuple(params))
+        result = self.db.execute_query(sql, (student_id,))
         
         if not result:
             return 0.0

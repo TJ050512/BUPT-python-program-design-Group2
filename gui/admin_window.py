@@ -11,6 +11,7 @@ from PIL import Image
 from utils.logger import Logger
 from core.course_manager import CourseManager
 from core.user_manager import UserManager
+from core.enrollment_manager import EnrollmentManager
 from utils.crypto import CryptoUtil
 import re
 from datetime import datetime
@@ -43,6 +44,7 @@ class AdminWindow:
         # 初始化管理器
         self.course_manager = CourseManager(db)
         self.user_manager = UserManager(db)
+        self.enrollment_manager = EnrollmentManager(db)
         
         # 设置窗口
         self.root.title(f"北京邮电大学教学管理系统 - 管理员端 - {user.name}")
@@ -2926,7 +2928,10 @@ class AdminWindow:
         
         # 插入数据
         for offering in offerings:
-            students_info = f"{offering.get('current_students', 0)}/{offering.get('max_students', 60)}"
+            current_count = offering.get('current_students', 0)
+            max_count = offering.get('max_students', 60)
+            # 将选课人数显示为可点击的格式
+            students_info = f"{current_count}/{max_count} (点击查看)"
             status_text = {"open": "开放", "closed": "关闭", "full": "已满"}.get(offering.get('status', 'open'), "开放")
             
             tree.insert("", "end", values=(
@@ -2939,9 +2944,56 @@ class AdminWindow:
                 "编辑/删除"
             ), tags=(offering['offering_id'],))
         
+        # 单击"选课人数"列查看学生名单
+        def on_click(event):
+            try:
+                # 获取点击的行和列
+                item = tree.identify_row(event.y)
+                column = tree.identify_column(event.x)
+                
+                # 检查是否点击了"选课人数"列（第5列，索引为'#5'）
+                # columns顺序: teacher(#1), semester(#2), time(#3), classroom(#4), students(#5), status(#6), action(#7)
+                if not item or column != '#5':
+                    return
+                
+                # 获取offering_id
+                item_tags = tree.item(item)['tags']
+                if not item_tags:
+                    return
+                
+                offering_id = item_tags[0]
+                
+                # 获取课程信息用于显示
+                offering_info = None
+                for o in offerings:
+                    if o['offering_id'] == offering_id:
+                        offering_info = o
+                        break
+                
+                if offering_info:
+                    # 获取课程名称
+                    course_info = self.course_manager.get_offering_by_id(offering_id)
+                    course_name = course_info.get('course_name', '') if course_info else ''
+                    
+                    # 显示学生名单窗口
+                    self.show_offering_students_dialog(
+                        parent_frame.winfo_toplevel(),
+                        offering_id,
+                        course_name,
+                        offering_info.get('class_time', ''),
+                        offering_info.get('classroom', '')
+                    )
+            except Exception as e:
+                Logger.error(f"查看学生名单失败: {e}", exc_info=True)
+        
         # 双击编辑
         def on_double_click(event):
             try:
+                # 如果点击的是"选课人数"列，不执行编辑操作
+                column = tree.identify_column(event.x)
+                if column == '#5':  # #5 是"选课人数"列
+                    return
+                
                 selection = tree.selection()
                 if not selection:
                     return
@@ -2952,6 +3004,7 @@ class AdminWindow:
                 Logger.error(f"编辑开课计划对话框打开失败: {e}", exc_info=True)
                 messagebox.showerror("错误", f"打开编辑对话框失败：{str(e)}")
         
+        tree.bind("<Button-1>", on_click)
         tree.bind("<Double-1>", on_double_click)
         
         scrollbar = ttk.Scrollbar(parent_frame, orient="vertical", command=tree.yview)
@@ -2959,6 +3012,165 @@ class AdminWindow:
         
         tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+    
+    def show_offering_students_dialog(self, parent_window, offering_id, course_name, class_time, classroom):
+        """显示开课计划的学生名单窗口"""
+        dialog = ctk.CTkToplevel(parent_window)
+        dialog.title("学生名单")
+        dialog.geometry("900x600")
+        dialog.resizable(True, True)
+        dialog.transient(parent_window)
+        dialog.grab_set()
+        
+        # 居中显示
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (900 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (600 // 2)
+        dialog.geometry(f"900x600+{x}+{y}")
+        
+        # 主容器
+        main_frame = ctk.CTkFrame(dialog, fg_color="white")
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # 标题区域
+        header_frame = ctk.CTkFrame(main_frame, fg_color=self.BUPT_BLUE, height=80)
+        header_frame.pack(fill="x", pady=(0, 10))
+        header_frame.pack_propagate(False)
+        
+        # 课程信息
+        title_text = f"学生名单 - {course_name}"
+        if class_time or classroom:
+            details = []
+            if class_time:
+                details.append(class_time)
+            if classroom:
+                details.append(classroom)
+            if details:
+                title_text += f" ({' | '.join(details)})"
+        
+        title_label = ctk.CTkLabel(
+            header_frame,
+            text=title_text,
+            font=("Microsoft YaHei UI", 18, "bold"),
+            text_color="white"
+        )
+        title_label.pack(expand=True)
+        
+        # 获取学生名单
+        students = self.enrollment_manager.get_course_students(offering_id)
+        
+        # 学生列表容器
+        list_frame = ctk.CTkFrame(main_frame, fg_color="white")
+        list_frame.pack(fill="both", expand=True)
+        
+        # 统计信息
+        stats_frame = ctk.CTkFrame(list_frame, fg_color="transparent")
+        stats_frame.pack(fill="x", padx=10, pady=10)
+        
+        stats_label = ctk.CTkLabel(
+            stats_frame,
+            text=f"共 {len(students)} 名学生",
+            font=("Microsoft YaHei UI", 14),
+            text_color="#666666"
+        )
+        stats_label.pack(side="left")
+        
+        # 创建表格
+        table_frame = ctk.CTkFrame(list_frame, fg_color="white")
+        table_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        
+        style = ttk.Style()
+        style.configure("Student.Treeview", 
+                       font=("Microsoft YaHei UI", 13), 
+                       rowheight=35,
+                       background="white",
+                       foreground="black",
+                       fieldbackground="white")
+        style.configure("Student.Treeview.Heading", 
+                       font=("Microsoft YaHei UI", 14, "bold"),
+                       background="#E8F4F8",
+                       foreground=self.BUPT_BLUE,
+                       relief="flat")
+        
+        columns = ("student_id", "name", "major", "class_name", "enrollment_date", "status")
+        tree = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            height=15,
+            style="Student.Treeview"
+        )
+        
+        tree.heading("student_id", text="学号")
+        tree.heading("name", text="姓名")
+        tree.heading("major", text="专业")
+        tree.heading("class_name", text="班级")
+        tree.heading("enrollment_date", text="选课时间")
+        tree.heading("status", text="状态")
+        
+        tree.column("student_id", width=120)
+        tree.column("name", width=100)
+        tree.column("major", width=200)
+        tree.column("class_name", width=120)
+        tree.column("enrollment_date", width=150)
+        tree.column("status", width=80)
+        
+        # 插入学生数据
+        if students:
+            for student in students:
+                status_text = {"enrolled": "已选", "completed": "已完成", "dropped": "已退课"}.get(
+                    student.get('status', 'enrolled'), "已选"
+                )
+                enrollment_date = student.get('enrollment_date', '')
+                if enrollment_date:
+                    # 格式化日期
+                    try:
+                        from datetime import datetime
+                        if isinstance(enrollment_date, str):
+                            dt = datetime.fromisoformat(enrollment_date.replace('Z', '+00:00'))
+                            enrollment_date = dt.strftime("%Y-%m-%d %H:%M")
+                    except:
+                        pass
+                
+                tree.insert("", "end", values=(
+                    student.get('student_id', ''),
+                    student.get('student_name', ''),
+                    student.get('major', ''),
+                    student.get('class_name', ''),
+                    enrollment_date or '',
+                    status_text
+                ))
+        else:
+            # 如果没有学生，显示提示
+            no_data_label = ctk.CTkLabel(
+                table_frame,
+                text="该课程暂无学生选课",
+                font=("Microsoft YaHei UI", 16),
+                text_color="#999999"
+            )
+            no_data_label.pack(expand=True)
+            return
+        
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # 关闭按钮
+        button_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        button_frame.pack(fill="x", padx=10, pady=10)
+        
+        close_btn = ctk.CTkButton(
+            button_frame,
+            text="关闭",
+            width=100,
+            height=35,
+            font=("Microsoft YaHei UI", 14),
+            fg_color=self.BUPT_BLUE,
+            command=dialog.destroy
+        )
+        close_btn.pack(side="right")
     
     def add_offering_dialog(self, parent_dialog, course_id, course_name):
         """添加开课计划对话框"""

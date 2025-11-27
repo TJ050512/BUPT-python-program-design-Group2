@@ -148,12 +148,11 @@ class CourseManager:
         result = self.db.execute_query(sql, (offering_id,))
         return result[0] if result else None
     
-    def get_available_courses(self, semester: str) -> List[Dict]:
+    def get_available_courses(self) -> List[Dict]:
         """
         获取可选课程（状态为open且未满）
         
         Args:
-            semester: 学期
         
         Returns:
             可选课程列表
@@ -167,7 +166,6 @@ class CourseManager:
                 c.course_type,
                 co.teacher_id,
                 t.name as teacher_name,
-                co.semester,
                 co.class_time,
                 co.classroom,
                 co.current_students,
@@ -176,19 +174,18 @@ class CourseManager:
             FROM course_offerings co
             JOIN courses c ON co.course_id = c.course_id
             JOIN teachers t ON co.teacher_id = t.teacher_id
-            WHERE co.semester=? AND co.status='open' AND co.current_students < co.max_students
+            WHERE co.status='open' AND co.current_students < co.max_students
             ORDER BY c.course_type, co.course_id
         """
         
-        return self.db.execute_query(sql, (semester,))
+        return self.db.execute_query(sql)
     
-    def get_teacher_courses(self, teacher_id: str, semester: str = None) -> List[Dict]:
+    def get_teacher_courses(self, teacher_id: str) -> List[Dict]:
         """
         获取教师授课列表
         
         Args:
             teacher_id: 教师工号
-            semester: 学期（可选）
         
         Returns:
             授课列表
@@ -199,7 +196,6 @@ class CourseManager:
                 co.course_id,
                 c.course_name,
                 c.credits,
-                co.semester,
                 co.class_time,
                 co.classroom,
                 co.current_students,
@@ -207,16 +203,10 @@ class CourseManager:
             FROM course_offerings co
             JOIN courses c ON co.course_id = c.course_id
             WHERE co.teacher_id=?
+            ORDER BY co.course_id
         """
         
-        params = [teacher_id]
-        if semester:
-            sql += " AND co.semester=?"
-            params.append(semester)
-        
-        sql += " ORDER BY co.semester DESC, co.course_id"
-        
-        return self.db.execute_query(sql, tuple(params))
+        return self.db.execute_query(sql, (teacher_id,))
     
     def add_course(self, course_data: Dict) -> bool:
         """

@@ -4,7 +4,8 @@
 """
 
 import sqlite3
-from typing import List, Dict, Optional, Tuple
+import re
+from typing import List, Dict, Optional, Tuple, Set
 from utils.logger import Logger
 
 
@@ -21,14 +22,13 @@ class EnrollmentManager:
         self.db = db
         Logger.info("选课管理器初始化完成")
     
-    def enroll_course(self, student_id: str, offering_id: int, semester: str) -> Tuple[bool, str]:
+    def enroll_course(self, student_id: str, offering_id: int) -> Tuple[bool, str]:
         """
         学生选课
         
         Args:
             student_id: 学号
             offering_id: 开课计划ID
-            semester: 学期
         
         Returns:
             (是否成功, 消息)
@@ -52,13 +52,13 @@ class EnrollmentManager:
             if existing_enrollment and existing_enrollment['status'] == 'enrolled':
                 return False, "您已选过该课程"
             
-            # 2.5. 检查是否已在本学期选择了同一门课程（不同老师）
-            same_course_check = self._check_same_course_enrolled(student_id, offering['course_id'], semester)
+            # 2.5. 检查是否已选择了同一门课程（不同老师）
+            same_course_check = self._check_same_course_enrolled(student_id, offering['course_id'])
             if same_course_check:
-                return False, f"您已在本学期选择了【{same_course_check}】，不能重复选择同一门课程"
+                return False, f"您已选择了【{same_course_check}】，不能重复选择同一门课程"
             
             # 3. 检查时间冲突
-            conflict = self._check_time_conflict(student_id, semester, offering['class_time'])
+            conflict = self._check_time_conflict(student_id, offering['class_time'])
             if conflict:
                 return False, f"与已选课程【{conflict}】时间冲突"
             
@@ -67,14 +67,14 @@ class EnrollmentManager:
             if existing_enrollment and existing_enrollment['status'] == 'dropped':
                 # 更新已存在的记录
                 count = self.db.update_data('enrollments', 
-                                          {'status': 'enrolled', 'semester': semester}, 
+                                          {'status': 'enrolled'}, 
                                           {'enrollment_id': existing_enrollment['enrollment_id']})
                 enrollment_id = existing_enrollment['enrollment_id'] if count > 0 else None
             else:
                 # 插入新记录（直接使用SQL以捕获触发器错误）
                 try:
-                    sql = "INSERT INTO enrollments (student_id, offering_id, semester, status) VALUES (?, ?, ?, ?)"
-                    self.db.cursor.execute(sql, (student_id, offering_id, semester, 'enrolled'))
+                    sql = "INSERT INTO enrollments (student_id, offering_id, status) VALUES (?, ?, ?)"
+                    self.db.cursor.execute(sql, (student_id, offering_id, 'enrolled'))
                     self.db.conn.commit()
                     enrollment_id = self.db.cursor.lastrowid
                 except sqlite3.OperationalError as db_error:
@@ -169,14 +169,13 @@ class EnrollmentManager:
             Logger.error(f"退课失败: {e}")
             return False, "退课失败，请稍后重试"
     
-    def get_student_enrollments(self, student_id: str, semester: str = None, 
+    def get_student_enrollments(self, student_id: str, 
                                 status: str = 'enrolled') -> List[Dict]:
         """
         获取学生的选课记录
         
         Args:
             student_id: 学号
-            semester: 学期（可选）
             status: 状态（enrolled/dropped/completed）
         
         Returns:
@@ -186,7 +185,6 @@ class EnrollmentManager:
             SELECT 
                 e.enrollment_id,
                 e.offering_id,
-                e.semester,
                 e.enrollment_date,
                 e.status,
                 co.course_id,
@@ -206,15 +204,11 @@ class EnrollmentManager:
         
         params = [student_id]
         
-        if semester:
-            sql += " AND e.semester = ?"
-            params.append(semester)
-        
         if status:
             sql += " AND e.status = ?"
             params.append(status)
         
-        sql += " ORDER BY e.semester DESC, c.course_id"
+        sql += " ORDER BY c.course_id"
         
         return self.db.execute_query(sql, tuple(params))
     
@@ -246,12 +240,9 @@ class EnrollmentManager:
         
         return self.db.execute_query(sql, (offering_id,))
     
-    def get_enrollment_statistics(self, semester: str) -> Dict:
+    def get_enrollment_statistics(self) -> Dict:
         """
         获取选课统计信息
-        
-        Args:
-            semester: 学期
         
         Returns:
             统计信息字典
@@ -260,9 +251,9 @@ class EnrollmentManager:
         sql1 = """
             SELECT COUNT(*) as total_enrollments
             FROM enrollments
-            WHERE semester = ? AND status = 'enrolled'
+            WHERE status = 'enrolled'
         """
-        result1 = self.db.execute_query(sql1, (semester,))
+        result1 = self.db.execute_query(sql1)
         total_enrollments = result1[0]['total_enrollments'] if result1 else 0
         
         # 热门课程（选课人数最多的前5门）
@@ -273,11 +264,10 @@ class EnrollmentManager:
                 co.max_students
             FROM course_offerings co
             JOIN courses c ON co.course_id = c.course_id
-            WHERE co.semester = ?
             ORDER BY co.current_students DESC
             LIMIT 5
         """
-        popular_courses = self.db.execute_query(sql2, (semester,))
+        popular_courses = self.db.execute_query(sql2)
         
         return {
             'total_enrollments': total_enrollments,
@@ -307,9 +297,13 @@ class EnrollmentManager:
         result = self.db.execute_query(sql, (student_id, offering_id))
         return result[0]['count'] > 0 if result else False
     
-    def _check_time_conflict(self, student_id: str, semester: str, class_time: str) -> Optional[str]:
+    def _check_time_conflict(self, student_id: str, class_time: str) -> Optional[str]:
         """
         检查时间冲突
+        
+        Args:
+            student_id: 学号
+            class_time: 要检查的课程时间字符串
         
         Returns:
             冲突的课程名称，无冲突返回None
@@ -317,21 +311,89 @@ class EnrollmentManager:
         if not class_time:
             return None
         
-        # 简化版：检查是否有完全相同的上课时间
+        # 解析当前课程的时间段
+        current_time_slots = self._parse_time_slots(class_time)
+        if not current_time_slots:
+            return None
+        
+        # 获取学生已选的所有课程及其时间
         sql = """
-            SELECT c.course_name
+            SELECT 
+                co.class_time,
+                c.course_name
             FROM enrollments e
             JOIN course_offerings co ON e.offering_id = co.offering_id
             JOIN courses c ON co.course_id = c.course_id
             WHERE e.student_id = ? 
-              AND e.semester = ? 
               AND e.status = 'enrolled'
-              AND co.class_time = ?
-            LIMIT 1
+              AND co.class_time IS NOT NULL
+              AND co.class_time <> ''
         """
         
-        result = self.db.execute_query(sql, (student_id, semester, class_time))
-        return result[0]['course_name'] if result else None
+        enrolled_courses = self.db.execute_query(sql, (student_id,))
+        
+        # 检查每个已选课程的时间段是否与当前课程冲突
+        for course in enrolled_courses:
+            enrolled_time_slots = self._parse_time_slots(course.get('class_time', ''))
+            if not enrolled_time_slots:
+                continue
+            
+            # 检查是否有时间段重叠
+            if current_time_slots & enrolled_time_slots:  # 使用集合交集检查
+                return course.get('course_name', '')
+        
+        return None
+    
+    def _parse_time_slots(self, class_time: str) -> Set[Tuple[int, int]]:
+        """
+        解析时间字符串，提取所有时间段
+        
+        Args:
+            class_time: 时间字符串（如：周一3-4节，周四3-4节）
+        
+        Returns:
+            时间段集合，每个元素为(星期, 节次)的元组
+        """
+        time_slots = set()
+        
+        if not class_time:
+            return time_slots
+        
+        # 支持中文逗号、英文逗号、顿号等多种分隔符
+        time_blocks = re.split(r'[，,、]', class_time)
+        
+        # 星期映射
+        weekday_map = {
+            '周一': 1, '周二': 2, '周三': 3, '周四': 4, '周五': 5,
+            '周1': 1, '周2': 2, '周3': 3, '周4': 4, '周5': 5
+        }
+        
+        for block in time_blocks:
+            block = block.strip()
+            if not block:
+                continue
+            
+            # 匹配星期和节次，支持多种格式：
+            # 周一1-2节、周一1-3节、周一 1-2节、周1第1-2节等
+            pattern = r'(周[一二三四五]|周[1-5])\s*(\d+)\s*[-~至]\s*(\d+)\s*[节堂]'
+            match = re.search(pattern, block)
+            
+            if match:
+                weekday_str = match.group(1)
+                start_period = int(match.group(2))
+                end_period = int(match.group(3))
+                
+                # 确保节次在合理范围内（1-12节）
+                if start_period < 1 or end_period > 12 or start_period > end_period:
+                    continue
+                
+                weekday = weekday_map.get(weekday_str)
+                if weekday:
+                    # 将连续节次都添加为时间段
+                    for period in range(start_period, end_period + 1):
+                        time_slots.add((weekday, period))
+        
+        return time_slots
     
     def _get_enrollment(self, student_id: str, offering_id: int) -> Optional[Dict]:
         """获取选课记录"""
@@ -350,14 +412,13 @@ class EnrollmentManager:
         result = self.db.execute_query(sql, (enrollment_id,))
         return result[0] if result else None
     
-    def _check_same_course_enrolled(self, student_id: str, course_id: str, semester: str) -> Optional[str]:
+    def _check_same_course_enrolled(self, student_id: str, course_id: str) -> Optional[str]:
         """
-        检查学生是否已在本学期选择了同一门课程（不同老师）
+        检查学生是否已选择了同一门课程（不同老师）
         
         Args:
             student_id: 学号
             course_id: 课程ID
-            semester: 学期
         
         Returns:
             如果已选，返回课程名称；否则返回None
@@ -368,12 +429,11 @@ class EnrollmentManager:
             JOIN course_offerings co ON e.offering_id = co.offering_id
             JOIN courses c ON co.course_id = c.course_id
             WHERE e.student_id = ?
-              AND e.semester = ?
               AND e.status = 'enrolled'
               AND co.course_id = ?
             LIMIT 1
         """
         
-        result = self.db.execute_query(sql, (student_id, semester, course_id))
+        result = self.db.execute_query(sql, (student_id, course_id))
         return result[0]['course_name'] if result else None
 

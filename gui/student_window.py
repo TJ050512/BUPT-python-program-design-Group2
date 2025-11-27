@@ -43,9 +43,6 @@ class StudentWindow:
         self.enrollment_manager = EnrollmentManager(db)
         self.grade_manager = GradeManager(db)
         
-        # 当前学期
-        self.current_semester = "2024-2025-1"
-        
         # 设置窗口
         self.root.title(f"北京邮电大学教学管理系统 - 学生端 - {user.name}")
         
@@ -214,13 +211,13 @@ class StudentWindow:
         
         # 获取选课记录
         enrollments = self.enrollment_manager.get_student_enrollments(
-            self.user.id, self.current_semester, 'enrolled'
+            self.user.id, status='enrolled'
         )
         
         if not enrollments:
             no_data_label = ctk.CTkLabel(
                 self.content_frame,
-                text="本学期暂无选课记录",
+                text="暂无选课记录",
                 font=("Microsoft YaHei UI", 18),
                 text_color="#666666"
             )
@@ -265,11 +262,11 @@ class StudentWindow:
         
         # 列宽
         tree.column("course_id", width=100)
-        tree.column("course_name", width=200)
+        tree.column("course_name", width=220)
         tree.column("credits", width=80)
         tree.column("teacher", width=100)
-        tree.column("time", width=180)
-        tree.column("classroom", width=100)
+        tree.column("time", width=200)
+        tree.column("classroom", width=120)
         tree.column("action", width=100)
         
         # 插入数据
@@ -401,7 +398,7 @@ class StudentWindow:
         refresh_button.pack(side="left", padx=10)
         
         # 获取可选课程
-        courses = self.course_manager.get_available_courses(self.current_semester)
+        courses = self.course_manager.get_available_courses()
         
         if not courses:
             no_data_label = ctk.CTkLabel(
@@ -501,13 +498,13 @@ class StudentWindow:
         
         if messagebox.askyesno("确认选课", f"确定要选择【{values[1]}】吗？"):
             success, message = self.enrollment_manager.enroll_course(
-                self.user.id, offering_id, self.current_semester
+                self.user.id, offering_id
             )
             if success:
                 # 获取课程信息用于日志
                 offering_info = self.course_manager.get_offering_by_id(offering_id)
                 course_name = offering_info['course_name'] if offering_info else values[1]
-                Logger.info(f"学生选课: {self.user.name} ({self.user.id}) - 课程: {course_name} (开课ID: {offering_id}, 学期: {self.current_semester})")
+                Logger.info(f"学生选课: {self.user.name} ({self.user.id}) - 课程: {course_name} (开课ID: {offering_id})")
                 messagebox.showinfo("成功", message)
                 self.show_course_selection()  # 刷新
             else:
@@ -526,7 +523,7 @@ class StudentWindow:
             self.course_selection_tree.delete(item)
         
         # 获取所有可选课程
-        all_courses = self.course_manager.get_available_courses(self.current_semester)
+        all_courses = self.course_manager.get_available_courses()
         
         # 如果没有关键词，显示所有课程
         if not keyword or keyword.strip() == "":
@@ -582,12 +579,12 @@ class StudentWindow:
         title.pack(pady=20, anchor="w", padx=20)
         
         # 获取成绩
-        grades = self.grade_manager.get_student_grades(self.user.id, self.current_semester)
+        grades = self.grade_manager.get_student_grades(self.user.id)
         
         if not grades:
             no_data_label = ctk.CTkLabel(
                 self.content_frame,
-                text="本学期暂无成绩记录",
+                text="暂无成绩记录",
                 font=("Microsoft YaHei UI", 18),
                 text_color="#666666"
             )
@@ -595,14 +592,14 @@ class StudentWindow:
             return
         
         # GPA显示
-        gpa = self.grade_manager.calculate_student_gpa(self.user.id, self.current_semester)
+        gpa = self.grade_manager.calculate_student_gpa(self.user.id)
         gpa_frame = ctk.CTkFrame(self.content_frame, fg_color=self.BUPT_BLUE, height=80)
         gpa_frame.pack(fill="x", padx=20, pady=10)
         gpa_frame.pack_propagate(False)
         
         gpa_label = ctk.CTkLabel(
             gpa_frame,
-            text=f"本学期GPA: {gpa}",
+            text=f"总GPA: {gpa}",
             font=("Microsoft YaHei UI", 22, "bold"),
             text_color="white"
         )
@@ -686,23 +683,14 @@ class StudentWindow:
         
         # 获取选课记录
         enrollments = self.enrollment_manager.get_student_enrollments(
-            self.user.id, self.current_semester, 'enrolled'
+            self.user.id, status='enrolled'
         )
-        
-        # 学期信息
-        semester_label = ctk.CTkLabel(
-            self.content_frame,
-            text=f"学期：{self.current_semester}",
-            font=("Microsoft YaHei UI", 16),
-            text_color="#666666"
-        )
-        semester_label.pack(pady=8, anchor="w", padx=20)
         
         if not enrollments:
             # 没有选课记录
             no_schedule_label = ctk.CTkLabel(
                 self.content_frame,
-                text="本学期暂无选课记录\n请前往「课程选课」进行选课",
+                text="暂无选课记录\n请前往「课程选课」进行选课",
                 font=("Microsoft YaHei UI", 18),
                 text_color="#666666",
                 justify="center"

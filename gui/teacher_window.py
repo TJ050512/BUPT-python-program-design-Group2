@@ -46,9 +46,6 @@ class TeacherWindow:
         self.enrollment_manager = EnrollmentManager(db)
         self.grade_manager = GradeManager(db)
         
-        # 当前学期
-        self.current_semester = "2024-2025-1"
-        
         # 设置窗口
         self.root.title(f"北京邮电大学教学管理系统 - 教师端 - {user.name}")
         
@@ -218,12 +215,12 @@ class TeacherWindow:
         title.pack(pady=20, anchor="w", padx=20)
         
         # 获取授课列表
-        courses = self.course_manager.get_teacher_courses(self.user.id, self.current_semester)
+        courses = self.course_manager.get_teacher_courses(self.user.id)
         
         if not courses:
             no_data_label = ctk.CTkLabel(
                 self.content_frame,
-                text="本学期暂无授课课程",
+                text="暂无授课课程",
                 font=("Microsoft YaHei UI", 14),
                 text_color="gray"
             )
@@ -283,8 +280,21 @@ class TeacherWindow:
         if not selected_course:
             return
         
-        # 找到选中的课程
-        course_names = [f"{c['course_name']} ({c['course_id']})" for c in self.students_courses_list]
+        # 找到选中的课程（通过下拉框的值匹配）
+        # 构建完整的课程名称列表（与下拉框中的格式一致）
+        course_names = []
+        for c in self.students_courses_list:
+            course_name = f"{c['course_name']} ({c['course_id']})"
+            if c.get('class_time') or c.get('classroom'):
+                details = []
+                if c.get('class_time'):
+                    details.append(c['class_time'])
+                if c.get('classroom'):
+                    details.append(c['classroom'])
+                if details:
+                    course_name += f" - {' | '.join(details)}"
+            course_names.append(course_name)
+        
         try:
             index = course_names.index(selected_course)
             offering_id = self.students_courses_list[index]['offering_id']
@@ -565,12 +575,12 @@ class TeacherWindow:
         
         # 如果没有指定课程，显示课程选择
         if offering_id is None:
-            courses = self.course_manager.get_teacher_courses(self.user.id, self.current_semester)
+            courses = self.course_manager.get_teacher_courses(self.user.id)
             
             if not courses:
                 no_data_label = ctk.CTkLabel(
                     self.content_frame,
-                    text="本学期暂无授课课程",
+                    text="暂无授课课程",
                     font=("Microsoft YaHei UI", 14),
                     text_color="gray"
                 )
@@ -590,13 +600,37 @@ class TeacherWindow:
                 card = ctk.CTkFrame(self.content_frame, fg_color="#F8F9FA")
                 card.pack(fill="x", padx=20, pady=5)
                 
+                # 左侧：课程信息
+                info_frame = ctk.CTkFrame(card, fg_color="transparent")
+                info_frame.pack(side="left", fill="x", expand=True, padx=20, pady=15)
+                
+                # 课程名称和代码
                 course_label = ctk.CTkLabel(
-                    card,
+                    info_frame,
                     text=f"{course['course_name']} ({course['course_id']})",
-                    font=("Microsoft YaHei UI", 14),
+                    font=("Microsoft YaHei UI", 14, "bold"),
                     text_color="black"
                 )
-                course_label.pack(side="left", padx=20, pady=15)
+                course_label.pack(anchor="w")
+                
+                # 上课时间和教室
+                time_classroom_text = ""
+                if course.get('class_time'):
+                    time_classroom_text = f"上课时间：{course['class_time']}"
+                if course.get('classroom'):
+                    if time_classroom_text:
+                        time_classroom_text += f"  |  教室：{course['classroom']}"
+                    else:
+                        time_classroom_text = f"教室：{course['classroom']}"
+                
+                if time_classroom_text:
+                    time_label = ctk.CTkLabel(
+                        info_frame,
+                        text=time_classroom_text,
+                        font=("Microsoft YaHei UI", 12),
+                        text_color="#666666"
+                    )
+                    time_label.pack(anchor="w", pady=(5, 0))
                 
                 select_btn = ctk.CTkButton(
                     card,
@@ -610,6 +644,9 @@ class TeacherWindow:
             return
         
         # 显示选中课程的成绩录入界面
+        # 获取课程详细信息（包括时间和教室）
+        offering_info = self.course_manager.get_offering_by_id(offering_id)
+        
         # 课程信息卡片
         course_card = ctk.CTkFrame(self.content_frame, fg_color="#F0F7FF", corner_radius=10)
         course_card.pack(fill="x", padx=20, pady=(10, 20))
@@ -617,13 +654,37 @@ class TeacherWindow:
         course_info_frame = ctk.CTkFrame(course_card, fg_color="transparent")
         course_info_frame.pack(fill="x", padx=20, pady=15)
         
+        # 左侧：课程名称和时间信息
+        left_info_frame = ctk.CTkFrame(course_info_frame, fg_color="transparent")
+        left_info_frame.pack(side="left", fill="x", expand=True)
+        
         course_label = ctk.CTkLabel(
-            course_info_frame,
+            left_info_frame,
             text=f"课程：{course_name}",
             font=("Microsoft YaHei UI", 20, "bold"),
             text_color=self.BUPT_BLUE
         )
-        course_label.pack(side="left")
+        course_label.pack(anchor="w")
+        
+        # 显示上课时间和教室
+        if offering_info:
+            time_classroom_text = ""
+            if offering_info.get('class_time'):
+                time_classroom_text = f"上课时间：{offering_info['class_time']}"
+            if offering_info.get('classroom'):
+                if time_classroom_text:
+                    time_classroom_text += f"  |  教室：{offering_info['classroom']}"
+                else:
+                    time_classroom_text = f"教室：{offering_info['classroom']}"
+            
+            if time_classroom_text:
+                time_label = ctk.CTkLabel(
+                    left_info_frame,
+                    text=time_classroom_text,
+                    font=("Microsoft YaHei UI", 13),
+                    text_color="#666666"
+                )
+                time_label.pack(anchor="w", pady=(5, 0))
         
         # 获取学生名单和成绩
         students = self.enrollment_manager.get_course_students(offering_id)
@@ -1032,12 +1093,12 @@ class TeacherWindow:
         title.pack(pady=20, anchor="w", padx=20)
         
         # 获取所有授课课程
-        courses = self.course_manager.get_teacher_courses(self.user.id, self.current_semester)
+        courses = self.course_manager.get_teacher_courses(self.user.id)
         
         if not courses:
             no_data_label = ctk.CTkLabel(
                 self.content_frame,
-                text="本学期暂无授课课程",
+                text="暂无授课课程",
                 font=("Microsoft YaHei UI", 14),
                 text_color="gray"
             )
@@ -1055,12 +1116,25 @@ class TeacherWindow:
         )
         label.pack(side="left", padx=(0, 10))
         
-        course_names = [f"{c['course_name']} ({c['course_id']})" for c in courses]
+        # 构建课程名称列表，包含时间和教室信息以便区分
+        course_names = []
+        for c in courses:
+            course_name = f"{c['course_name']} ({c['course_id']})"
+            if c.get('class_time') or c.get('classroom'):
+                details = []
+                if c.get('class_time'):
+                    details.append(c['class_time'])
+                if c.get('classroom'):
+                    details.append(c['classroom'])
+                if details:
+                    course_name += f" - {' | '.join(details)}"
+            course_names.append(course_name)
+        
         self.students_course_combo = ctk.CTkComboBox(
             course_frame,
             values=course_names,
-            width=300,
-            font=("Microsoft YaHei UI", 13)
+            width=500,
+            font=("Microsoft YaHei UI", 12)
         )
         self.students_course_combo.pack(side="left")
         self.students_course_combo.set(course_names[0] if course_names else "")
@@ -1099,12 +1173,12 @@ class TeacherWindow:
         title.pack(pady=20, anchor="w", padx=20)
         
         # 获取授课课程
-        courses = self.course_manager.get_teacher_courses(self.user.id, self.current_semester)
+        courses = self.course_manager.get_teacher_courses(self.user.id)
         
         if not courses:
             no_data_label = ctk.CTkLabel(
                 self.content_frame,
-                text="本学期暂无授课课程",
+                text="暂无授课课程",
                 font=("Microsoft YaHei UI", 14),
                 text_color="gray"
             )
@@ -1129,14 +1203,26 @@ class TeacherWindow:
         )
         label.pack(side="left", padx=(0, 15))
         
-        # 改进课程名称显示：包含课程代码以便区分
-        course_names = [f"{c['course_name']} ({c['course_id']})" for c in courses]
+        # 改进课程名称显示：包含课程代码、时间和教室以便区分
+        course_names = []
+        for c in courses:
+            course_name = f"{c['course_name']} ({c['course_id']})"
+            if c.get('class_time') or c.get('classroom'):
+                details = []
+                if c.get('class_time'):
+                    details.append(c['class_time'])
+                if c.get('classroom'):
+                    details.append(c['classroom'])
+                if details:
+                    course_name += f" - {' | '.join(details)}"
+            course_names.append(course_name)
+        
         self.analysis_course_combo = ctk.CTkComboBox(
             course_inner_frame,
             values=course_names,
-            width=400,
+            width=600,
             height=40,
-            font=("Microsoft YaHei UI", 15),
+            font=("Microsoft YaHei UI", 13),
             command=self.on_analysis_course_changed
         )
         self.analysis_course_combo.pack(side="left")
@@ -1149,26 +1235,46 @@ class TeacherWindow:
         
         # 默认显示第一门课程的统计
         if courses:
-            self.show_course_statistics(courses[0]['offering_id'], courses[0].get('course_name', ''))
+            self.show_course_statistics(
+                courses[0]['offering_id'], 
+                courses[0].get('course_name', ''),
+                courses[0].get('class_time'),
+                courses[0].get('classroom')
+            )
     
     def on_analysis_course_changed(self, selected_course_name):
         """课程选择变化时的回调"""
         if not hasattr(self, 'analysis_courses_list') or not selected_course_name:
             return
         
-        # 找到选中的课程
-        course_names = [f"{c['course_name']} ({c['course_id']})" for c in self.analysis_courses_list]
+        # 找到选中的课程（通过下拉框的值匹配）
+        # 构建完整的课程名称列表（与下拉框中的格式一致）
+        course_names = []
+        for c in self.analysis_courses_list:
+            course_name = f"{c['course_name']} ({c['course_id']})"
+            if c.get('class_time') or c.get('classroom'):
+                details = []
+                if c.get('class_time'):
+                    details.append(c['class_time'])
+                if c.get('classroom'):
+                    details.append(c['classroom'])
+                if details:
+                    course_name += f" - {' | '.join(details)}"
+            course_names.append(course_name)
+        
         try:
             index = course_names.index(selected_course_name)
             selected_course = self.analysis_courses_list[index]
             self.show_course_statistics(
                 selected_course['offering_id'],
-                selected_course.get('course_name', '')
+                selected_course.get('course_name', ''),
+                selected_course.get('class_time'),
+                selected_course.get('classroom')
             )
         except (ValueError, IndexError):
             pass
     
-    def show_course_statistics(self, offering_id, course_name=""):
+    def show_course_statistics(self, offering_id, course_name="", class_time=None, classroom=None):
         """显示课程统计信息"""
         # 清除之前的图表容器内容
         if hasattr(self, 'analysis_chart_container'):
@@ -1187,6 +1293,7 @@ class TeacherWindow:
             course_label_frame = ctk.CTkFrame(self.analysis_chart_container, fg_color="transparent")
             course_label_frame.pack(fill="x", pady=(0, 15))
             
+            # 课程名称
             course_title = ctk.CTkLabel(
                 course_label_frame,
                 text=f"课程：{course_name}",
@@ -1194,6 +1301,26 @@ class TeacherWindow:
                 text_color=self.BUPT_BLUE
             )
             course_title.pack(anchor="w")
+            
+            # 显示上课时间和教室
+            if class_time or classroom:
+                time_classroom_text = ""
+                if class_time:
+                    time_classroom_text = f"上课时间：{class_time}"
+                if classroom:
+                    if time_classroom_text:
+                        time_classroom_text += f"  |  教室：{classroom}"
+                    else:
+                        time_classroom_text = f"教室：{classroom}"
+                
+                if time_classroom_text:
+                    time_label = ctk.CTkLabel(
+                        course_label_frame,
+                        text=time_classroom_text,
+                        font=("Microsoft YaHei UI", 13),
+                        text_color="#666666"
+                    )
+                    time_label.pack(anchor="w", pady=(5, 0))
         
         if stats['total_count'] == 0:
             no_data = ctk.CTkLabel(
