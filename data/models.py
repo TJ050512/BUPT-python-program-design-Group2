@@ -44,12 +44,19 @@ class Student:
         return f"{self.grade}{self.college_code}{self.student_id[-3:]}"
 
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
-        if self.student_id and self.college_code and not self.student_id.startswith(str(self.grade)):
-            self.student_id = f"{self.grade}{self.college_code}{self.student_id[-3:]}"
+        """转换为字典（不修改对象本身，只做兜底推断）"""
+        # 兜底：如果没填 college_code，用学号推断
+        college_code = self.college_code or self._infer_college_code_from_id()
+
+        # 兜底：如果 student_id 不规范且 grade/college_code 都有，就生成规范学号
+        student_id = self.student_id
+        if student_id and self.grade and college_code:
+            if not student_id.startswith(str(self.grade)):
+                student_id = f"{self.grade}{college_code}{student_id[-3:]}"
+
         return {
-            'student_id': self.student_id,
-            'college_code': self.college_code,
+            'student_id': student_id,
+            'college_code': college_code,
             'major_id': self.major_id,
             'name': self.name,
             'password': self.password,
@@ -64,17 +71,31 @@ class Student:
             'program_years': self.program_years,
         }
 
+    def _infer_college_code_from_id(self) -> Optional[str]:
+        sid = self.student_id or ""
+        if len(sid) >= 7 and sid[:4].isdigit():
+            return sid[4:7]   # ✅ 只取 yyy
+        return None
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Student":
+        sid = str(d.get('student_id') or d.get('id') or '')
+        grade = d.get('grade')
+        college_code = d.get('college_code')
+
+        # 兜底：如果没给 college_code，就从学号里扣 yyy
+        if not college_code and len(sid) >= 7 and sid[:4].isdigit():
+            college_code = sid[4:7]
+
         return cls(
-            student_id=str(d.get('student_id') or d.get('id') or ''),
-            college_code=d.get('college_code'),
+            student_id=sid,
+            college_code=college_code,
             major_id=d.get('major_id'),
             name=d.get('name') or '',
             password=d.get('password'),
             gender=d.get('gender'),
             major=d.get('major'),
-            grade=d.get('grade'),
+            grade=grade,
             class_name=d.get('class_name') or d.get('class'),
             email=d.get('email'),
             phone=d.get('phone'),
@@ -260,7 +281,10 @@ class CourseOffering:
             course_id=str(d.get('course_id') or ''),
             course_name=d.get('course_name'),
             teacher_id=d.get('teacher_id'),
-            teacher_name = d.get("teacher_name") or d.get("name"),
+            ta1_id=d.get('ta1_id'),                 # ✅ 补上
+            ta2_id=d.get('ta2_id'),                 # ✅ 补上
+            teacher_name=d.get("teacher_name") or d.get("name"),
+            department=d.get('department'),         # ✅ 补上
             semester=d.get('semester') or '',
             class_time=d.get('class_time'),
             classroom=d.get('classroom'),

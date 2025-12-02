@@ -19,7 +19,7 @@ try:
 except Exception:
     Config = None  # type: ignore
     
-from models import Student, Teacher, Course, CourseOffering, Enrollment, Grade
+from data.models import Student, Teacher, Course, CourseOffering, Enrollment, Grade
 
 class _DBAdapter:
     """内部适配器：屏蔽不同数据库实现差异"""
@@ -33,7 +33,7 @@ class _DBAdapter:
         except Exception:
             self._impl = Database(str(db_path)) #
             self._mode = 'data.database'
-        Logger.info("DatabaseInterface: 回退使用 data.database")
+            Logger.info("DatabaseInterface: 回退使用 data.database")
 
     # 统一方法名：query 返回 list[dict], execute 返回受影响行数, insert 返回新 id 或 None
     def query(self, sql: str, params: Tuple = None) -> List[Dict]:
@@ -76,23 +76,19 @@ class DatabaseInterface:
         self.db: Optional[_DBAdapter] = None
         self._init_database()
 
-        def _get_academic_year(self, student_grade: int, semester: str) -> int:
-            """
-            计算当前是大几：
-            semester 形如 '2024-2025-1'
-            student_grade 为入学年份（如 2022）
-            """
-            try:
-                start_year = int(semester.split("-")[0])
-            except Exception:
-                return 1
-            diff = start_year - int(student_grade)
-            year = diff + 1  # 大一=1、大二=2...
-            if year < 1:
-                year = 1
-            if year > 4:
-                year = 4
-            return year
+    def _get_academic_year(self, student_grade: int, semester: str) -> int:
+        """
+        计算当前是大几：
+        semester 形如 '2024-2025-1'
+        student_grade 为入学年份（如 2022）
+        """
+        try:
+            start_year = int(semester.split("-")[0])
+        except Exception:
+            return 1
+        diff = start_year - int(student_grade)
+        year = diff + 1
+        return min(max(year, 1), 4)
 
     def _get_db_path(self) -> str:
         # 获取数据库路径逻辑不变
@@ -182,6 +178,72 @@ class DatabaseInterface:
             Logger.error(f"查询教师失败: {e}", exc_info=True)
             return None
 
+    def sync_course_offering_counts(self, semester: Optional[str] = None) -> int:
+        """
+        同步 course_offerings.current_students 和 status
+        逻辑对齐 sync_student_counts.py
+        Returns: 更新了多少个 offering（按查询行数估算）
+        """
+        if not self.db:
+            return 0
+
+        try:
+            if semester:
+                # 1) 同步人数（只算 enrolled/completed）
+                self.db.execute("""
+                    UPDATE course_offerings
+                    SET current_students = (
+                        SELECT COUNT(*)
+                        FROM enrollments
+                        WHERE enrollments.offering_id = course_offerings.offering_id
+                          AND enrollments.status IN ('enrolled', 'completed')
+                          AND enrollments.semester = ?
+                    )
+                    WHERE semester = ?
+                """, (semester, semester))
+            else:
+                self.db.execute("""
+                    UPDATE course_offerings
+                    SET current_students = (
+                        SELECT COUNT(*)
+                        FROM enrollments
+                        WHERE enrollments.offering_id = course_offerings.offering_id
+                          AND enrollments.status IN ('enrolled', 'completed')
+                    )
+                """)
+
+            # 2) 同步状态
+            if semester:
+                self.db.execute("""
+                    UPDATE course_offerings
+                    SET status = CASE
+                        WHEN current_students >= max_students THEN 'full'
+                        ELSE 'open'
+                    END
+                    WHERE semester = ?
+                """, (semester,))
+            else:
+                self.db.execute("""
+                    UPDATE course_offerings
+                    SET status = CASE
+                        WHEN current_students >= max_students THEN 'full'
+                        ELSE 'open'
+                    END
+                """)
+
+            # 3) 返回更新量（粗略：该学期 offering 数）
+            if semester:
+                rows = self.db.query(
+                    "SELECT COUNT(*) AS c FROM course_offerings WHERE semester=?",
+                    (semester,)
+                )
+            else:
+                rows = self.db.query("SELECT COUNT(*) AS c FROM course_offerings")
+            return int(rows[0]["c"]) if rows else 0
+
+        except Exception as e:
+            Logger.error(f"sync_course_offering_counts 失败: {e}", exc_info=True)
+            return 0
     # ============ 用户相关操作 ============
 
     def query_user_by_username(self, username: str) -> Optional[Dict]:
@@ -417,18 +479,21 @@ class DatabaseInterface:
             Logger.error(f"关闭数据库连接失败: {e}", exc_info=True)
 
     # ============ 课程/开课查询 ============
-    def query_offerings_by_semester(self, semester: str, student_id: str=None) -> List[Dict]:
+    def query_offerings_by_semester(self, semester: str, student_id: str = None) -> List[Dict]:
         """
         查询本学期所有【可选】开课班级：
         - 只看传入的 semester
-        - 只返回 status='open' 且已排好课（class_time 不为空/未排课）且未满员的课程
-        如果提供 student_id，则增加字段：
-        - is_enrolled: 该学生是否已选这个班
-        - is_required: 该课程是否是该学生在本学年的必修课（根据 program_courses）
+        - 只返回 status='open' 且已排好课且未满员的课程
+        - 如果传 student_id，则按培养方案的 grade_recommendation 过滤只看本学年课程
         """
-        required_course_ids: set[str] = set()
+        if not self.db:
+            return []
 
-        # 如果传了 student_id：先算出这学期该学生的必修课列表
+        required_course_ids: set[str] = set()
+        major_id = None
+        academic_year = None
+
+        # ① 如果有 student_id：先取学生的 grade/major_id 并算 academic_year
         if student_id:
             stu_rows = self.db.query(
                 "SELECT grade, major_id FROM students WHERE student_id=? LIMIT 1",
@@ -438,21 +503,32 @@ class DatabaseInterface:
                 grade = int(stu_rows[0].get("grade") or 0)
                 major_id = stu_rows[0].get("major_id")
                 academic_year = self._get_academic_year(grade, semester)
+
                 if major_id:
                     pc_rows = self.db.query(
                         """
                         SELECT course_id 
                         FROM program_courses
                         WHERE major_id=? 
-                          AND course_category='必修'
-                          AND (grade_recommendation IS NULL OR grade_recommendation=?)
+                        AND course_category='必修'
+                        AND (grade_recommendation IS NULL OR grade_recommendation=?)
                         """,
                         (major_id, academic_year)
                     )
                     required_course_ids = {r["course_id"] for r in pc_rows}
 
-        # 主查询：本学期所有“可选”的班级
-        sql = """
+        # ② is_enrolled 字段：有 student 就算，没 student 就给 0
+        if student_id:
+            enrolled_select = """
+                (SELECT COUNT(*) 
+                FROM enrollments e 
+                WHERE e.student_id = ? 
+                AND e.offering_id = o.offering_id) AS is_enrolled
+            """
+        else:
+            enrolled_select = "0 AS is_enrolled"
+
+        sql = f"""
             SELECT
                 o.offering_id,
                 o.course_id,
@@ -466,17 +542,15 @@ class DatabaseInterface:
                 c.credits,
                 c.hours,
                 c.course_type,
+                c.is_public_elective,
+                o.is_cross_major_open,
                 t.teacher_id,
                 t.name AS teacher_name,
                 ts.day_of_week,
                 ts.starts_at,
                 ts.ends_at,
                 r.name AS classroom_name,
-                -- 是否已选该班
-                (SELECT COUNT(*) 
-                 FROM enrollments e 
-                 WHERE e.student_id = ? 
-                   AND e.offering_id = o.offering_id) AS is_enrolled
+                {enrolled_select}
             FROM course_offerings o
             JOIN courses c ON o.course_id = c.course_id
             JOIN teachers t ON o.teacher_id = t.teacher_id
@@ -484,34 +558,44 @@ class DatabaseInterface:
             LEFT JOIN time_slots ts ON os.slot_id = ts.slot_id
             LEFT JOIN classrooms r ON os.classroom_id = r.classroom_id
             WHERE o.semester = ?
-              AND o.status = 'open'
-              AND o.class_time IS NOT NULL
-              AND o.class_time <> '未排课'
-              AND o.current_students < o.max_students
-            ORDER BY o.course_id, o.teacher_id
+            AND o.status = 'open'
+            AND o.class_time IS NOT NULL
+            AND o.class_time <> '未排课'
+            AND o.current_students < o.max_students
         """
-        params = (student_id or "", semester)
-        rows = self.db.query(sql, params) if self.db else []
 
-        # 聚合：同一 course_id 下多个 offering
+        params: List[Any] = []
+        if student_id:
+            params.append(student_id)  # 对应 is_enrolled 子查询里的 ?
+        params.append(semester)        # 对应 WHERE o.semester = ?
+
+        # ③ 如果学生信息齐全，则追加“按学年过滤”
+        if student_id and major_id and academic_year:
+            sql += """
+            AND (
+                    c.is_public_elective = 1
+                    OR EXISTS (
+                        SELECT 1
+                        FROM program_courses pc
+                        WHERE pc.course_id = o.course_id
+                        AND pc.major_id = ?
+                        AND (pc.grade_recommendation IS NULL OR pc.grade_recommendation = ?)
+                    )
+                    OR o.is_cross_major_open = 1
+                )
+            """
+            params.extend([major_id, academic_year])
+
+        sql += " ORDER BY o.course_id, o.teacher_id"
+
+        rows = self.db.query(sql, tuple(params))
+
+        # ④ 聚合输出保持原逻辑
         aggregated_courses: Dict[str, Dict] = {}
-
         for row in rows:
             cid = row["course_id"]
 
-            # 已有的 class_time 是 “周一1-2节, 周三3-4节” 这样的文本，这里主要用于 UI 展示
-            teacher_time_str = ""
-            if row.get("class_time"):
-                teacher_time_str = row["class_time"]
-            elif row.get("day_of_week") and row.get("starts_at"):
-                # 兜底：如果没有 class_time 字段，临时拼一下（一般用不到）
-                day_map = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五"}
-                day = day_map.get(row["day_of_week"], "未知")
-                start = row["starts_at"][:-3]
-                end = row["ends_at"][:-3]
-                classroom = row.get("classroom_name") or "待定"
-                teacher_time_str = f"{day}{start}~{end} @ {classroom}"
-
+            teacher_time_str = row.get("class_time") or ""
             offering_detail = {
                 "offering_id": row["offering_id"],
                 "teacher_id": row["teacher_id"],
@@ -529,14 +613,12 @@ class DatabaseInterface:
                     "course_name": row["course_name"],
                     "credits": row["credits"],
                     "course_type": row["course_type"],
-                    # 该课程是否为“本学年必修课”
                     "is_required": cid in required_course_ids,
                     "offerings": [offering_detail],
                 }
             else:
                 aggregated_courses[cid]["offerings"].append(offering_detail)
 
-        # 返回 list
         return list(aggregated_courses.values())
 
 

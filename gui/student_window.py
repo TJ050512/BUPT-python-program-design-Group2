@@ -398,7 +398,13 @@ class StudentWindow:
         refresh_button.pack(side="left", padx=10)
         
         # 获取可选课程
-        courses = self.course_manager.get_available_courses()
+        current_semester = "2024-2025-2" 
+        
+        # 传入学期和当前用户的ID
+        courses = self.course_manager.get_available_courses(
+            current_semester, 
+            self.user.id
+        )
         
         if not courses:
             no_data_label = ctk.CTkLabel(
@@ -417,16 +423,16 @@ class StudentWindow:
         # 表格样式
         style = ttk.Style()
         style.configure("Treeview", 
-                       font=("Microsoft YaHei UI", 15), 
-                       rowheight=45,
-                       background="white",
-                       foreground="black",
-                       fieldbackground="white")
+                        font=("Microsoft YaHei UI", 15), 
+                        rowheight=45,
+                        background="white",
+                        foreground="black",
+                        fieldbackground="white")
         style.configure("Treeview.Heading", 
-                       font=("Microsoft YaHei UI", 16, "bold"),
-                       background="#E8F4F8",
-                       foreground=self.BUPT_BLUE,
-                       relief="flat")
+                        font=("Microsoft YaHei UI", 16, "bold"),
+                        background="#E8F4F8",
+                        foreground=self.BUPT_BLUE,
+                        relief="flat")
         style.map("Treeview.Heading",
                  background=[("active", "#D0E8F0")])
         
@@ -455,17 +461,21 @@ class StudentWindow:
         tree.column("students", width=100)
         tree.column("action", width=80)
         
+        # --- 修复核心逻辑：双重循环遍历 offerings ---
         for course in courses:
-            tree.insert("", "end", values=(
-                course['course_id'],
-                course['course_name'],
-                course['course_type'],
-                f"{course['credits']}",
-                course['teacher_name'],
-                course['class_time'] or '',
-                f"{course['current_students']}/{course['max_students']}",
-                "选课"
-            ), tags=(course['offering_id'],))
+            # 遍历该课程下的所有开课班级
+            for offering in course.get('offerings', []):
+                tree.insert("", "end", values=(
+                    course.get('course_id', ''),
+                    course.get('course_name', ''),
+                    course.get('course_type', ''),
+                    f"{course.get('credits', 0)}",
+                    offering.get('teacher_name', '未知'),
+                    offering.get('class_time', ''),
+                    f"{offering.get('current_students', 0)}/{offering.get('max_students', 0)}",
+                    "选课"
+                ), tags=(offering['offering_id'],))
+        # ----------------------------------------
         
         tree.bind("<Double-1>", lambda e: self.enroll_course_dialog(tree))
         
@@ -522,45 +532,44 @@ class StudentWindow:
         for item in self.course_selection_tree.get_children():
             self.course_selection_tree.delete(item)
         
-        # 获取所有可选课程
-        all_courses = self.course_manager.get_available_courses()
+        # 获取所有可选课程 (修复：补全参数)
+        current_semester = "2024-2025-2"  # 建议最好定义在类常量或配置文件中
+        all_courses = self.course_manager.get_available_courses(current_semester, self.user.id)
         
-        # 如果没有关键词，显示所有课程
-        if not keyword or keyword.strip() == "":
-            filtered_courses = all_courses
-        else:
-            # 过滤课程：搜索课程名称或课程代码
-            keyword_lower = keyword.strip().lower()
-            filtered_courses = []
-            for course in all_courses:
-                course_name = course.get('course_name', '').lower()
-                course_id = course.get('course_id', '').lower()
-                teacher_name = course.get('teacher_name', '').lower()
+        keyword_lower = keyword.strip().lower() if keyword else ""
+        found_any = False
+
+        # 遍历课程
+        for course in all_courses:
+            # 遍历该课程下的所有开课班级（offering）
+            for offering in course.get('offerings', []):
+                # 获取匹配所需的字段
+                c_name = course.get('course_name', '').lower()
+                c_id = course.get('course_id', '').lower()
+                t_name = offering.get('teacher_name', '').lower()
                 
-                # 检查是否包含关键词（在课程名称、代码或教师姓名中）
-                if (keyword_lower in course_name or 
-                    keyword_lower in course_id or 
-                    keyword_lower in teacher_name):
-                    filtered_courses.append(course)
-        
-        # 更新表格显示
-        if not filtered_courses:
-            # 如果没有结果，显示提示
+                # 如果没有关键词，或关键词匹配成功
+                if (not keyword_lower) or (keyword_lower in c_name or 
+                                           keyword_lower in c_id or 
+                                           keyword_lower in t_name):
+                    
+                    found_any = True
+                    self.course_selection_tree.insert("", "end", values=(
+                        course.get('course_id', ''),
+                        course.get('course_name', ''),
+                        course.get('course_type', ''),
+                        f"{course.get('credits', 0)}",
+                        offering.get('teacher_name', '未知'),
+                        offering.get('class_time', ''),
+                        f"{offering.get('current_students', 0)}/{offering.get('max_students', 0)}",
+                        "选课"
+                    ), tags=(offering['offering_id'],))
+
+        # 如果没有结果，显示提示
+        if not found_any:
             self.course_selection_tree.insert("", "end", values=(
                 "", "未找到匹配的课程", "", "", "", "", "", ""
             ))
-        else:
-            for course in filtered_courses:
-                self.course_selection_tree.insert("", "end", values=(
-                    course['course_id'],
-                    course['course_name'],
-                    course['course_type'],
-                    f"{course['credits']}",
-                    course['teacher_name'],
-                    course['class_time'] or '',
-                    f"{course['current_students']}/{course['max_students']}",
-                    "选课"
-                ), tags=(course['offering_id'],))
     
     def show_my_grades(self):
         """显示我的成绩"""

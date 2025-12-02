@@ -44,7 +44,7 @@ class EnrollmentManager:
             
             if offering['current_students'] >= offering['max_students']:
                 return False, "该课程已满"
-            
+            semester = offering["semester"]
             # 2. 检查是否已选过该课程
             existing_enrollment = self._get_enrollment(student_id, offering_id)
             
@@ -66,22 +66,34 @@ class EnrollmentManager:
             # 如果之前退过课，则更新记录；否则插入新记录
             if existing_enrollment and existing_enrollment['status'] == 'dropped':
                 # 更新已存在的记录
-                count = self.db.update_data('enrollments', 
-                                          {'status': 'enrolled'}, 
-                                          {'enrollment_id': existing_enrollment['enrollment_id']})
+                count = self.db.update_data(
+                    'enrollments',
+                    {'status': 'enrolled', 'semester': semester},  # ✅补 semester
+                    {'enrollment_id': existing_enrollment['enrollment_id']}
+                )
                 enrollment_id = existing_enrollment['enrollment_id'] if count > 0 else None
             else:
-                # 插入新记录（直接使用SQL以捕获触发器错误）
+                # 先查 offering 的 semester（保证 NOT NULL）
+                off_rows = self.db.execute_query(
+                    "SELECT semester FROM course_offerings WHERE offering_id=? LIMIT 1",
+                    (offering_id,)
+                )
+                if not off_rows:
+                    return False, "课程不存在"
+
+                semester = off_rows[0]["semester"]
+
                 try:
-                    sql = "INSERT INTO enrollments (student_id, offering_id, status) VALUES (?, ?, ?)"
-                    self.db.cursor.execute(sql, (student_id, offering_id, 'enrolled'))
+                    sql = """
+                        INSERT INTO enrollments (student_id, offering_id, semester, status)
+                        VALUES (?, ?, ?, ?)
+                    """
+                    self.db.cursor.execute(sql, (student_id, offering_id, semester, 'enrolled'))
                     self.db.conn.commit()
                     enrollment_id = self.db.cursor.lastrowid
                 except sqlite3.OperationalError as db_error:
-                    # 重新抛出数据库错误，让外层捕获处理
                     raise db_error
                 except Exception as db_error:
-                    # 其他数据库错误也重新抛出
                     raise db_error
             
             if enrollment_id:
@@ -89,6 +101,12 @@ class EnrollmentManager:
                 sql = "UPDATE course_offerings SET current_students = current_students + 1 WHERE offering_id = ?"
                 self.db.execute_update(sql, (offering_id,))
                 
+                try:
+                    from data.database_interface import DatabaseInterface
+                    DatabaseInterface().sync_course_offering_counts(semester)
+                except Exception:
+                    pass
+
                 # 检查是否已满
                 if offering['current_students'] + 1 >= offering['max_students']:
                     self.db.update_data('course_offerings', 

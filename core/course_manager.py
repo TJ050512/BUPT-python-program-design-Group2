@@ -148,7 +148,7 @@ class CourseManager:
         result = self.db.execute_query(sql, (offering_id,))
         return result[0] if result else None
     
-    def get_available_courses(self) -> List[Dict]:
+    #def get_available_courses(self) -> List[Dict]:
         """
         获取可选课程（状态为open且未满）
         
@@ -157,28 +157,32 @@ class CourseManager:
         Returns:
             可选课程列表
         """
-        sql = """
-            SELECT 
-                co.offering_id,
-                co.course_id,
-                c.course_name,
-                c.credits,
-                c.course_type,
-                co.teacher_id,
-                t.name as teacher_name,
-                co.class_time,
-                co.classroom,
-                co.current_students,
-                co.max_students,
-                co.status
-            FROM course_offerings co
-            JOIN courses c ON co.course_id = c.course_id
-            JOIN teachers t ON co.teacher_id = t.teacher_id
-            WHERE co.status='open' AND co.current_students < co.max_students
-            ORDER BY c.course_type, co.course_id
-        """
+    #    sql = """
+    #        SELECT 
+    #            co.offering_id,
+    #            co.course_id,
+    #            c.course_name,
+    #            c.credits,
+    #            c.course_type,
+    #            co.teacher_id,
+    #            t.name as teacher_name,
+    #            co.class_time,
+    #            co.classroom,
+    #            co.current_students,
+    #            co.max_students,
+    #            co.status
+    #        FROM course_offerings co
+    #        JOIN courses c ON co.course_id = c.course_id
+    #        JOIN teachers t ON co.teacher_id = t.teacher_id
+    #        WHERE co.status='open' AND co.current_students < co.max_students
+    #        ORDER BY c.course_type, co.course_id
+    #    """
         
-        return self.db.execute_query(sql)
+    #    return self.db.execute_query(sql)
+    def get_available_courses(self, semester: str, student_id: str=None) -> List[Dict]:
+        from data.database_interface import DatabaseInterface
+        di = DatabaseInterface()
+        return di.query_offerings_by_semester(semester, student_id)
     
     def get_teacher_courses(self, teacher_id: str) -> List[Dict]:
         """

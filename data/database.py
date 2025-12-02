@@ -135,24 +135,31 @@ class Database:
         ''')
 
         # 4. 开课计划表
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS course_offerings (
-                offering_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                course_id TEXT NOT NULL,
-                teacher_id TEXT NOT NULL,
-                semester TEXT NOT NULL,
-                class_time TEXT,
-                classroom TEXT,
-                current_students INTEGER DEFAULT 0,
-                max_students INTEGER DEFAULT 60,
-                status TEXT DEFAULT 'open',
-                classroom_id INTEGER,
-                is_cross_major_open INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (course_id) REFERENCES courses(course_id),
-                FOREIGN KEY (teacher_id) REFERENCES teachers(teacher_id)
-            )
-        ''')
+        self.cursor.execute("""
+        CREATE TABLE IF NOT EXISTS course_offerings (
+            offering_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+            course_id       TEXT NOT NULL,
+            teacher_id      TEXT NOT NULL,
+            semester        TEXT NOT NULL,
+
+            department      TEXT,            -- ✅ 开课学院
+            ta1_id          TEXT,            -- ✅ 助教1
+            ta2_id          TEXT,            -- ✅ 助教2
+
+            class_time      TEXT,            -- ✅ 节次文本（如 周三3-4节）
+            classroom       TEXT,            -- ✅ 教室名称
+
+            max_students    INTEGER DEFAULT 60,
+            current_students INTEGER DEFAULT 0,
+            status          TEXT DEFAULT 'open',  -- open/full/pending 等
+
+            created_at      TEXT,
+            updated_at      TEXT,
+
+            FOREIGN KEY(course_id) REFERENCES courses(course_id),
+            FOREIGN KEY(teacher_id) REFERENCES teachers(teacher_id)
+        );
+        """)
 
         # === 新增学院/专业结构 ===
         self.cursor.execute('''
@@ -200,6 +207,7 @@ class Database:
                 INSERT OR REPLACE INTO _students_fmt_guard(student_id) VALUES (NEW.student_id);
             END;
 
+            /* <--- 开始注释掉这部分 --->
             CREATE TRIGGER IF NOT EXISTS trg_students_college_match_bi
             BEFORE INSERT ON students
             WHEN NEW.college_code IS NOT NULL
@@ -216,10 +224,11 @@ class Database:
             BEGIN
                 SELECT
                     CASE WHEN NEW.college_code IS NOT NULL
-                        AND substr(NEW.student_id,1,7) <> NEW.college_code
+                        AND substr(NEW.student_id,5,3) <> NEW.college_code
                     THEN RAISE(ABORT, '学生学号与学院编号不匹配')
                 END;
             END;
+            <--- 结束注释 ---> */
         ''')
 
         # === 教师工号格式校验 ===
@@ -481,9 +490,10 @@ class Database:
         # ====== 兼容性追加字段（已存在则跳过） ======
         # 学生表：入学方式 / 学制（年）
         for sql in [
-            "ALTER TABLE students ADD COLUMN admission_type TEXT",  # 保送/统招/推免/交换/留学生等
-            "ALTER TABLE students ADD COLUMN program_years INTEGER", # 2/3/4/5 年等
-            "ALTER TABLE course_offerings ADD COLUMN department TEXT"
+            "ALTER TABLE students ADD COLUMN admission_type TEXT",
+            "ALTER TABLE students ADD COLUMN program_years INTEGER",
+            "ALTER TABLE course_offerings ADD COLUMN department TEXT",
+            "ALTER TABLE course_offerings ADD COLUMN is_cross_major_open INTEGER DEFAULT 0"
         ]:
             try: self.cursor.execute(sql)
             except Exception: pass

@@ -7,6 +7,7 @@
 """
 import sys
 import os
+import re
 import csv
 import random
 import hashlib
@@ -334,6 +335,11 @@ def ensure_core_tables(db):
         add_column_if_missing("ta1_id", "ta1_id TEXT")
         add_column_if_missing("ta2_id", "ta2_id TEXT")
         add_column_if_missing("department", "department TEXT")
+        add_column_if_missing("class_time", "class_time TEXT")
+        add_column_if_missing("classroom", "classroom TEXT")
+        add_column_if_missing("max_students", "max_students INTEGER DEFAULT 60")
+        add_column_if_missing("current_students", "current_students INTEGER DEFAULT 0")
+        add_column_if_missing("status", "status TEXT DEFAULT 'open'")
 
         Logger.info("表结构检查完毕（自动升级完成）")
 
@@ -352,9 +358,13 @@ def upgrade_course_offerings_table(db):
         needed = {
             "ta1_id": "TEXT",
             "ta2_id": "TEXT",
-            "department": "TEXT"
+            "department": "TEXT",
+            "class_time": "TEXT",
+            "classroom": "TEXT",
+            "max_students": "INTEGER DEFAULT 60",
+            "current_students": "INTEGER DEFAULT 0",
+            "status": "TEXT DEFAULT 'open'"
         }
-
         for col, typ in needed.items():
             if col not in cols:
                 try:
@@ -389,16 +399,17 @@ def create_teachers(db: DBAdapter, n: int = 10):
 
     # 职称、岗位类型、职级映射（保留你之前的增强）
     title_weights = {
-        "教授": 5, "副教授": 10, "讲师": 40, "助教": 10,
-        "研究员": 5, "副研究员": 8, "助理研究员": 10,
-        "实验师": 5, "高级实验师": 5,
-        "辅导员": 2, "教学秘书": 2, "教务员": 2, "行政主管": 3
+        "讲师": 18,
+        "研究员": 3,
+        "副研究员": 3,
+        "副教授": 3,
+        "教授": 1,
     }
     job_type_map = {
         "教授": "教学科研岗", "副教授": "教学科研岗", "讲师": "教学科研岗", "助教": "教学科研岗",
         "研究员": "科研岗", "副研究员": "科研岗", "助理研究员": "科研岗",
         "实验师": "实验技术岗", "高级实验师": "实验技术岗",
-        "辅导员": "学生管理岗", "教学秘书": "教务管理岗", "教务员": "教务管理岗", "行政主管": "行政管理岗"
+        "辅导员": "学生管理岗", "教学秘书": "教务管理岗", "教务员": "教务管理岗", "行政主管": "行政管理岗", "后勤主管": "后勤管理岗"
     }
     hire_level_map = {
         "教授": "正高级", "副教授": "副高级", "讲师": "中级", "助教": "初级",
@@ -489,6 +500,9 @@ def create_students(db: DBAdapter, total_count: int = 4000):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     grade_years = [2022, 2023, 2024, 2025]
 
+    majors_rows = db.execute_query("SELECT major_id, name FROM majors")
+    major_name_to_id = {m["name"]: m["major_id"] for m in majors_rows} if majors_rows else {}
+
     # 1. 计算每届每院的基础人数
     num_colleges = len(COLLEGE_CATALOG)
     num_grades = len(grade_years)
@@ -541,9 +555,10 @@ def create_students(db: DBAdapter, total_count: int = 4000):
                     "gender": random.choice(["男", "女"]),
                     "birth_date": birth_date,
                     "major": major,                      # 专业=文本字段（使用循环确定的专业）
+                    "major_id": major_name_to_id.get(major),
                     "grade": grade,                      # 年级=2022~2025
                     "class_name": class_name,            # 班级号=xxxx yyy zzz
-                    "college_code": college_code_yyy,    # 学院码=yyy（与学号 yyy 部分一致）
+                    "college_code": college_code_full,    # 学院码=yyy（与学号 yyy 部分一致）
                     "enrollment_date": f"{grade}-09-01",
                     "batch_no": grade - 2020,
                     "status": "active",
@@ -710,60 +725,82 @@ def resolve_teacher_dept(course_row):
 def build_unique_course_semester_plan(db: DBAdapter, SEM_LIST: List[str]) -> Dict[str, str]:
     """
     返回 dict: course_id -> semester（唯一）
-    规则：根据 program_courses 的 grade_recommendation，
-          每门课在推荐学年的“秋季学期”开课。
+    规则：
+    - 多学期：按 program_courses.grade_recommendation 映射到对应学年秋季学期，并随机偏移到春季
+    - 单学期：只把“与当前学期季节匹配”的课程映射到该学期
     """
     if not SEM_LIST:
         return {}
 
-    # 映射关系：建议年级 → SEM_LIST 中的索引（秋季学期）
-    GRADE_TO_SEM_INDEX = {
-        1: 0,   # 大一=1 -> index 0 (大一秋)
-        2: 2,   # 大二=2 -> index 2 (大二秋)
-        3: 4,   # 大三=3 -> index 4 (大三秋)
-        4: 6,   # 大四=4 -> index 6 (大四秋)
-    }
+    # ---------------------------
+    # ✅ 课程季节判定：秋 / 春
+    # ---------------------------
+    def get_term(course_id: str) -> str:
+        """
+        返回 "秋" 或 "春"
+        优先按课程名判断，上/下/1/2；再兜底按编号奇偶。
+        """
+        row = db.execute_query(
+            "SELECT course_name FROM courses WHERE course_id=?",
+            (course_id,)
+        )
+        cname = row[0]["course_name"] if row else ""
 
-    # 取 program_courses
+        # 1) 名称里带“上 / I / 1 / (上)” → 秋
+        if any(k in cname for k in ["上", "Ⅰ", "I", "（上）", "(上)", "1"]):
+            return "秋"
+
+        # 2) 名称里带“下 / II / 2 / (下)” → 春
+        if any(k in cname for k in ["下", "Ⅱ", "II", "（下）", "(下)", "2"]):
+            return "春"
+
+        # 3) 兜底：取编号数字部分奇偶
+        digits = re.findall(r"\d+", course_id)
+        if digits:
+            num = int(digits[-1])
+            return "秋" if num % 2 == 1 else "春"
+
+        # 4) 最后兜底：默认秋
+        return "秋"
+
+    # ============================================================
+    # ✅ 单学期模式：只开当前季节的课程（不把春季塞到秋季）
+    # ============================================================
+    if len(SEM_LIST) == 1:
+        only_sem = SEM_LIST[0]
+        sem_idx = only_sem.split("-")[-1]  # "1" or "2"
+        current_term = "秋" if sem_idx == "1" else "春"
+
+        rows = db.execute_query("SELECT course_id FROM courses")
+        plan = {}
+        for r in rows:
+            cid = r["course_id"]
+            if get_term(cid) == current_term:
+                plan[cid] = only_sem
+        return plan
+
+    # ============================================================
+    # 多学期模式（保留原本逻辑）
+    # ============================================================
+    GRADE_TO_SEM_INDEX = {1: 0, 2: 2, 3: 4, 4: 6}
+
     rows = db.execute_query("""
         SELECT course_id, major_id, grade_recommendation
         FROM program_courses
     """)
 
-    plan: Dict[str, str] = {}
-    
-    # --- 修复逻辑开始 ---
-    course_list = {}
-    for r in rows:
-        # 使用 course_id + major_id 作为唯一键
-        key = (r["course_id"], r["major_id"])
-        course_list[key] = r
-    
-    # 对每门唯一的课程ID进行处理，避免重复排课
-    processed_cids = set()
+    plan = {}
     for r in rows:
         cid = r["course_id"]
-        if cid in processed_cids:
-             continue
-        processed_cids.add(cid)
-        
-        year = int(r["grade_recommendation"])
-        
-        # 根据推荐年级，取对应秋季学期
-        idx_base = GRADE_TO_SEM_INDEX.get(year)
-        if idx_base is None:
-            continue
-            
-        # 随机决定是安排在秋季学期 (idx_base) 还是春季学期 (idx_base + 1)
-        # 假设 50% 秋季，50% 春季
-        sem_offset = random.choice([0, 1])
+        gr = int(r.get("grade_recommendation") or 1)
+
+        idx_base = GRADE_TO_SEM_INDEX.get(gr, 0)
+        sem_offset = random.choice([0, 1])  # 秋 / 春之间随机偏移
         idx = idx_base + sem_offset
-        # --- 修复逻辑结束 ---
-        
-        # 确保索引在 SEM_LIST 范围内
+
         if idx < len(SEM_LIST):
             plan[cid] = SEM_LIST[idx]
-            
+
     return plan
 
 
@@ -1390,7 +1427,7 @@ def bind_evening_public_offerings(db, semester: str="2024-2025-2"):
         room = room_rows[0]
         
         # 提前生成可读的时间字符串
-        session_str = _build_session_string(db, slot['slot_id'], room['name'])
+        session_str = _build_session_string(db, [slot['slot_id']], room['name'])
 
         for o in offs:
             oid = o['offering_id']
@@ -1573,205 +1610,228 @@ def seed_program_courses(db: DBAdapter):
         Logger.warning("未找到任何专业数据，跳过 program_courses 生成。")
         return
 
-    # 全局课程分类，用于定义通用培养方案
+    # ===== 1) 全校通用课程按年级推荐 =====
     GLOBAL_COURSE_MAP = {
-        # 1. 公共必修课（按年级推荐）
+        # 公共必修：严格限定在大一/大二
         "PUBLIC_REQUIRED": [
-            # 大一：秋/春主要公共基础
-            ("MA101", 1),   # 高数上
-            ("MA102", 1),   # 高数下
-            ("PH101", 1),   # 物理上
+            # --- 大一必修 ---
+            ("MA101", 1),
+            ("MA102", 1),
+            ("MA201", 1),   # ✅ 线性代数必须是大一
+            ("PH101", 1),
+            ("PH102", 1),
             ("EN101", 1),
             ("EN102", 1),
             ("PE101", 1),
             ("PE102", 1),
-            ("ZX101", 1),   # 思修
-            ("ML101", 1),   # 军事理论
-            ("XL101", 1),   # 心理健康
+            ("ZX101", 1),
+            ("ML101", 1),
+            ("XL101", 1),
+            ("YW101", 1),
 
-            # 大二：高数后续 & 线代、概统、英语3/4 等
-            ("MA201", 2),
-            ("MA202", 2),
-            ("PH102", 2),
+            # --- 大二必修 ---
+            ("MA202", 2),   # 概统放大二
             ("EN103", 2),
             ("EN104", 2),
             ("PE103", 2),
             ("PE104", 2),
-            ("HX101", 2),   # 近代史纲要
-            ("ZX102", 2),   # 马原
+            ("HX101", 2),
+            ("ZX102", 2),
+            ("ZX103", 2),
         ],
 
-        # 2. 信息/通信类基础课（大二~大三）
+        # 信息/通信类基础：大二~大三
         "INFO_CORE_REQUIRED": [
-            ("CM201", 2),  # C语言
-            ("CM202", 2),  # C++
-            ("CM203", 2),  # Python
-            ("CM204", 2),  # 数据结构
-            ("CM205", 2),  # 离散数学
-            ("CM206", 3),  # 组成原理
-            ("CM207", 3),  # 操作系统
-            ("CM208", 3),  # 数据库基础
-            ("CM209", 3),  # 计网基础
-            ("CM210", 3),  # 软件工程导论
+            ("CM201", 2),
+            ("CM202", 2),
+            ("CM203", 2),
+            ("CM204", 2),
+            ("CM205", 2),
+            ("CM206", 3),
+            ("CM207", 3),
+            ("CM208", 3),
+            ("CM209", 3),
+            ("CM210", 3),
         ],
 
-        # 3. 公共选修/通识课（所有学院选修，大二/大三为主）
+        # 通识/公选：大二为主，大三补充
         "GENERAL_ELECTIVE": [
-            ("GE101", 2),
-            ("GE102", 2),
-            ("GE103", 2),
-            ("GE104", 2),
-            ("GE105", 2),
-            ("GE106", 2),
-            ("GE107", 2),
-            ("GE108", 3),
-            ("GE109", 3),
-            ("GE110", 3),
-            ("GE111", 3),
-            ("GE112", 3),
-            ("GE113", 3),
-            ("GE114", 3),
-            ("GE115", 3),
-            ("GE116", 3),
-            ("GE117", 3),
-            ("GE118", 3),
-            ("GE119", 3),
+            ("GE101", 2), ("GE102", 2), ("GE103", 2), ("GE104", 2),
+            ("GE105", 2), ("GE106", 2), ("GE107", 2),
+            ("GE108", 3), ("GE109", 3), ("GE110", 3), ("GE111", 3),
+            ("GE112", 3), ("GE113", 3), ("GE114", 3), ("GE115", 3),
+            ("GE116", 3), ("GE117", 3), ("GE118", 3), ("GE119", 3),
             ("GE120", 3),
+            ("AI310", 3),
+            ("CS410", 3),
+            ("EE410", 3),
         ],
     }
 
-    # 学院代码到课程ID的专业特色映射（专业核心课/高年级选修）
+    # ===== 2) 学院专业课按成长顺序（2->3->4） =====
     COLLEGE_SPECIALTY_MAP = {
-        # 计算机学院 2021001
+        # 计算机学院
         "2021001": [
+            # 大三主干必修
             ("CS301", 3, '必修'),
             ("CS302", 3, '必修'),
             ("CS303", 3, '必修'),
             ("CS304", 3, '必修'),
+            ("SE402", 3, '必修'),
+
+            # 大四方向/实践/选修
+            ("SE401", 4, '必修'),
+            ("SE403", 4, '选修'),
             ("CS305", 4, '选修'),
             ("CS306", 4, '选修'),
             ("CS307", 4, '选修'),
             ("CS401", 4, '选修'),
             ("CS402", 4, '选修'),
             ("CS403", 4, '选修'),
-            ("SE401", 4, '必修'),
-            ("SE402", 3, '必修'),
-            ("SE403", 4, '选修'),
         ],
 
-        # 信息与通信工程学院 2021002
+        # 信息与通信工程学院
         "2021002": [
+            # 大二基础
             ("TC201", 2, '必修'),
             ("TC202", 2, '必修'),
             ("TC203", 2, '必修'),
+
+            # 大三主干
             ("TC301", 3, '必修'),
             ("TC302", 3, '必修'),
             ("TC303", 3, '必修'),
+
+            # 大四高阶/方向
             ("TC401", 4, '必修'),
             ("TC402", 4, '选修'),
             ("TC403", 4, '选修'),
         ],
 
-        # 网络空间安全学院 2021003
+        # 网络空间安全学院
         "2021003": [
+            # 大二基础
             ("SC201", 2, '必修'),
             ("SC202", 2, '必修'),
+
+            # 大三主干
             ("SC301", 3, '必修'),
             ("SC302", 3, '选修'),
             ("SC303", 3, '选修'),
-            ("SC304", 4, '选修'),
+
+            # 大四高阶/实践
             ("SC401", 4, '必修'),
             ("SC402", 4, '选修'),
-            # 共享 CS/CM 部分课程作为选修
-            ("CM209", 3, '选修'),
-            ("CS305", 4, '选修'),
+            ("SC304", 4, '选修'),
         ],
 
-        # 电子工程学院 2021004
+        # 电子工程学院
         "2021004": [
+            # 大二基础
             ("EE201", 2, '必修'),
             ("EE202", 2, '必修'),
             ("EE203", 2, '必修'),
+
+            # 大三主干
             ("EE301", 3, '必修'),
             ("EE302", 3, '必修'),
             ("EE303", 3, '必修'),
+
+            # 大四方向
             ("EE304", 4, '选修'),
             ("EE401", 4, '选修'),
             ("EE402", 4, '选修'),
         ],
 
-        # 现代邮政学院 2021005
+        # 现代邮政学院
         "2021005": [
+            # 大二基础
             ("MP201", 2, '必修'),
             ("MP202", 2, '必修'),
+
+            # 大三主干
             ("MP301", 3, '必修'),
             ("MP302", 3, '必修'),
             ("MP303", 3, '选修'),
+
+            # 大四方向
             ("MP401", 4, '选修'),
             ("MP402", 4, '选修'),
         ],
 
-        # 人工智能学院 2021006
+        # 人工智能学院（按你要求修正）
         "2021006": [
+            # 大一导论
             ("AI201", 1, '必修'),
-            ("AI202", 2, '选修'),
+
+            # 大二基础
+            ("AI202", 2, '必修'),  # ✅ 关键：从大二选修改为大二必修
+            ("CM204", 2, '必修'),  # 数据结构是 AI 学院合理前置
+
+            # 大三主干
             ("AI301", 3, '必修'),
             ("AI302", 3, '必修'),
             ("AI303", 3, '选修'),
             ("AI304", 3, '选修'),
+
+            # 大四方向/高阶
             ("AI401", 4, '必修'),
             ("AI402", 4, '选修'),
-            # 共享计算机学院的一些课程
-            ("CS301", 3, '必修'),
-            ("CM204", 2, '必修'),
+
+            # 共享计算机课程：只做大三选修
+            ("CS301", 3, '选修'),
         ],
 
-        # 国际学院 2021007
+        # 国际学院：本科培养顺序
         "2021007": [
             ("IC201", 1, '必修'),
-            ("IC202", 2, '必修'),
-            ("IC301", 3, '选修'),
-            # 国际计算机 / 电信等引入信息类基础
             ("CM201", 1, '必修'),
             ("CM202", 1, '必修'),
+
+            ("IC202", 2, '必修'),
             ("CM204", 2, '必修'),
+
             ("CM209", 3, '必修'),
+            ("IC301", 3, '选修'),
         ],
     }
 
-    # 迭代所有专业进行绑定
+
+    # ===== 3) 写入 program_courses =====
     for major in majors:
         mid = major['major_id']
         ccode = major['college_code']
         mname = major['name']
 
-        # --- 1. 公共必修课绑定 (所有专业) ---
+        # 3.1 公共必修（所有专业）
         for course_id, grade_rec in GLOBAL_COURSE_MAP["PUBLIC_REQUIRED"]:
-            db.execute_update("INSERT OR IGNORE INTO program_courses(major_id,course_id,course_category,grade_recommendation) VALUES(?,?,?,?)",
-                              (mid, course_id, '必修', grade_rec))
+            db.execute_update(
+                "INSERT OR IGNORE INTO program_courses(major_id,course_id,course_category,grade_recommendation) "
+                "VALUES(?,?,?,?)",
+                (mid, course_id, '必修', grade_rec)
+            )
 
-        # --- 2. 信息类核心基础课绑定 (特定学院) ---
+        # 3.2 信息类核心基础（信息类学院）
         if ccode in ["2021001", "2021002", "2021003", "2021004", "2021006", "2021007"]:
             for course_id, grade_rec in GLOBAL_COURSE_MAP["INFO_CORE_REQUIRED"]:
-                # 国际学院的非信息类专业可以设为选修，这里简化为必修
-                db.execute_update("INSERT OR IGNORE INTO program_courses(major_id,course_id,course_category,grade_recommendation) VALUES(?,?,?,?)",
-                                  (mid, course_id, '必修', grade_rec))
-                
-        # --- 3. 专业特色课和高年级选修绑定 (按学院绑定所有专业) ---
+                db.execute_update(
+                    "INSERT OR IGNORE INTO program_courses(major_id,course_id,course_category,grade_recommendation) "
+                    "VALUES(?,?,?,?)",
+                    (mid, course_id, '必修', grade_rec)
+                )
+
+        # 3.3 学院专业课（按学院绑定）
         if ccode in COLLEGE_SPECIALTY_MAP:
             for course_id, grade_rec, category in COLLEGE_SPECIALTY_MAP[ccode]:
 
-                # 默认分类（按学院设定）
                 current_category = category
                 quota = 0
 
-                # --- 特殊专业微调 ---
+                # 软件工程专业微调：CS302 改选修
                 if "软件工程" in mname and course_id == "CS302":
-                    # 软件工程专业把操作系统改成选修
                     current_category = '选修'
-                    quota = 10  
+                    quota = 10
 
-                # === 关键：确保专业课一定进入 program_courses ===
                 db.execute_update("""
                     INSERT OR IGNORE INTO program_courses(
                         major_id, course_id, course_category,
@@ -1779,16 +1839,16 @@ def seed_program_courses(db: DBAdapter):
                     ) VALUES (?, ?, ?, ?, ?)
                 """, (mid, course_id, current_category, quota, grade_rec))
 
-        # --- 4. 公共选修课绑定 (所有专业) ---
+        # 3.4 公选/通识（所有专业）
         for course_id, grade_rec in GLOBAL_COURSE_MAP["GENERAL_ELECTIVE"]:
-             # 公选课：对所有专业都是选修，允许跨专业，设置名额
-            db.execute_update("INSERT OR IGNORE INTO program_courses(major_id,course_id,course_category,cross_major_quota,grade_recommendation) VALUES(?,?,?,?,?)",
-                              (mid, course_id, '选修', 50, grade_rec))
-            
-    # 最后：确保课程表中的公选标记与程序课程保持一致（防止在 create_courses 中未正确设置）
-    db.execute_update("UPDATE courses SET is_public_elective=1 WHERE course_id IN ('GE101', 'GE102')")
-    
-    Logger.info("✅ 培养方案（program_courses）绑定完成，已区分学院、专业和学年推荐。")
+            db.execute_update(
+                "INSERT OR IGNORE INTO program_courses("
+                "major_id,course_id,course_category,cross_major_quota,grade_recommendation"
+                ") VALUES(?,?,?,?,?)",
+                (mid, course_id, '选修', 50, grade_rec)
+            )
+
+    Logger.info("✅ 培养方案 program_courses 生成完成（年级严格合理）。")
 
 
 def seed_all(db: DBAdapter, students: int = 200, teachers: int = 10, semester: str = "2024-2025-2"):
@@ -1852,21 +1912,24 @@ def seed_all(db: DBAdapter, students: int = 200, teachers: int = 10, semester: s
         f"{start_year-3}-{start_year-2}-1",
         f"{start_year-3}-{start_year-2}-2",
     ]
-    # 清空之前的 offering 、选课、成绩
+    # === 10~12. 只生成一个学期 ===
+    # 清空之前的 offering 、选课、成绩、排课
+    db.execute_update("DELETE FROM offering_sessions")
     db.execute_update("DELETE FROM course_offerings")
     db.execute_update("DELETE FROM enrollments")
     db.execute_update("DELETE FROM grades")
 
-    for sem in SEMESTERS:
-        db.execute_update("DELETE FROM offering_sessions")
-        db.execute_update("DELETE FROM course_offerings WHERE semester=?", (sem,))
-        Logger.info(f"🟦 正在生成学期 {sem} 的开课 与 选课数据...")
+    Logger.info(f"🟦 正在生成学期 {semester} 的开课 与 选课数据...")
 
-        create_offerings(db, sem, SEMESTERS)
-        enroll_students(db, sem)
-        assign_grades(db)
+    # 只生成这一个学期
+    create_offerings(db, semester, [semester])
+    enroll_students(db, semester)
+    assign_grades(db)
 
-    Logger.info("🎉 四个年级（秋季 + 春季）完整 8 个学期数据生成完毕！")
+    # 晚上公选课节次绑定只针对本学期
+    bind_evening_public_offerings(db, semester=semester)
+
+    Logger.info("🎉 单学期数据生成完毕！")
 
 
     # 12. 晚上公选课节次绑定
@@ -1905,6 +1968,8 @@ def import_students_from_csv(db: DBAdapter, csv_file: str = None) -> tuple[int, 
                         'gender': row.get('gender', '').strip(),
                         'birth_date': row.get('birth_date', '').strip() or None,
                         'major': row.get('major', '').strip(),
+                        "major_id": row.get("major_id") or None,        # ✅
+                        "college_code": row.get("college_code") or None,# ✅
                         'grade': int(row.get('grade')) if row.get('grade') else None,
                         'class_name': row.get('class_name', '').strip(),
                         'enrollment_date': row.get('enrollment_date', '').strip() or None,
@@ -2025,9 +2090,10 @@ def export_csv_files(db: DBAdapter, students_file: str = None, teachers_file: st
         students = db.execute_query("SELECT * FROM students ORDER BY student_id")
         if students:
             fieldnames = [
-                'student_id', 'name', 'password', 'gender', 'birth_date',
-                'major', 'grade', 'class_name', 'enrollment_date', 'status',
-                'email', 'phone', 'created_at', 'updated_at'
+                "student_id","name","password","gender","birth_date",
+                "major","major_id","college_code",   # ✅ 加在这里
+                "grade","class_name","enrollment_date",
+                "status","email","phone","created_at","updated_at"
             ]
             if exclude_password and 'password' in fieldnames:
                 fieldnames.remove('password')
@@ -2075,18 +2141,11 @@ def export_csv_files(db: DBAdapter, students_file: str = None, teachers_file: st
                     writer.writerow(row)
             Logger.info(f"已导出教师 CSV: {teachers_file}")
 
-        # ------ 导出课程 + 开课信息 ------
+        # -----------------------------------------
+        # ✅ 导出开课计划 course_offerings.csv（单学期简化版）
+        # -----------------------------------------
         courses = db.execute_query("""
             SELECT
-                o.offering_id,
-                o.semester,
-                o.class_time,
-                o.classroom,
-                o.max_students,
-                o.current_students,
-                o.status,
-                o.department,
-
                 c.course_id,
                 c.course_name,
                 c.credits,
@@ -2095,45 +2154,53 @@ def export_csv_files(db: DBAdapter, students_file: str = None, teachers_file: st
                 c.is_public_elective,
                 c.credit_type,
 
-                t.teacher_id      AS teacher_id,
-                t.name            AS teacher_name,
-                t.title           AS teacher_title,
-                t.department      AS teacher_department,
+                o.offering_id,
+                o.department,
+                o.class_time,
+                o.classroom,
+                o.max_students,
+                COALESCE(o.current_students,0) AS current_students,
+                o.status,
 
-                t1.teacher_id     AS ta1_id,
-                t1.name           AS ta1_name,
-                t1.title          AS ta1_title,
+                o.teacher_id,
+                t.name AS teacher_name,
+                t.title AS teacher_title,
+                t.department AS teacher_department,
 
-                t2.teacher_id     AS ta2_id,
-                t2.name           AS ta2_name,
-                t2.title          AS ta2_title
+                o.ta1_id,
+                ta1.name AS ta1_name,
+                o.ta2_id,
+                ta2.name AS ta2_name
+
             FROM course_offerings o
-            LEFT JOIN courses c   ON o.course_id = c.course_id
-            LEFT JOIN teachers t  ON o.teacher_id = t.teacher_id
-            LEFT JOIN teachers t1 ON o.ta1_id    = t1.teacher_id
-            LEFT JOIN teachers t2 ON o.ta2_id    = t2.teacher_id
+            JOIN courses c ON c.course_id = o.course_id
+            JOIN teachers t ON t.teacher_id = o.teacher_id
+            LEFT JOIN teachers ta1 ON ta1.teacher_id = o.ta1_id
+            LEFT JOIN teachers ta2 ON ta2.teacher_id = o.ta2_id
             ORDER BY c.course_id, o.offering_id
         """)
+
         if courses:
             course_fields = [
-                # 课程维度
                 "course_id", "course_name", "credits", "hours",
                 "course_type", "is_public_elective", "credit_type",
-                # 开课维度
-                "offering_id", "semester", "department",
+
+                "offering_id", "department",
                 "class_time", "classroom",
                 "max_students", "current_students", "status",
-                # 教师 / 助教
+
                 "teacher_id", "teacher_name", "teacher_title", "teacher_department",
-                "ta1_id", "ta1_name", "ta1_title",
-                "ta2_id", "ta2_name", "ta2_title",
+                "ta1_id", "ta1_name",
+                "ta2_id", "ta2_name",
             ]
+
             with open(courses_file, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.DictWriter(f, fieldnames=course_fields)
                 writer.writeheader()
                 for row in courses:
                     writer.writerow({k: row.get(k, "") for k in course_fields})
-            Logger.info(f"已导出课程开课 CSV: {courses_file}")
+
+            Logger.info(f"✅ 开课计划已导出 -> {courses_file}")
 
     except Exception as e:
         Logger.error(f"导出 CSV 失败: {e}", exc_info=True)
