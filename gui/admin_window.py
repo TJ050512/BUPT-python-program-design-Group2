@@ -2864,7 +2864,6 @@ class AdminWindow:
                 co.offering_id,
                 co.teacher_id,
                 t.name as teacher_name,
-                co.semester,
                 co.class_time,
                 co.classroom,
                 co.current_students,
@@ -2873,7 +2872,7 @@ class AdminWindow:
             FROM course_offerings co
             LEFT JOIN teachers t ON co.teacher_id = t.teacher_id
             WHERE co.course_id=?
-            ORDER BY co.semester DESC, co.offering_id DESC
+            ORDER BY co.offering_id DESC
         """
         offerings = self.db.execute_query(sql, (course_id,))
         
@@ -2901,7 +2900,7 @@ class AdminWindow:
                        foreground=self.BUPT_BLUE,
                        relief="flat")
         
-        columns = ("teacher", "semester", "time", "classroom", "students", "status", "action")
+        columns = ("teacher", "time", "classroom", "students", "status", "action")
         tree = ttk.Treeview(
             parent_frame,
             columns=columns,
@@ -2911,7 +2910,6 @@ class AdminWindow:
         )
         
         tree.heading("teacher", text="授课教师")
-        tree.heading("semester", text="学期")
         tree.heading("time", text="上课时间")
         tree.heading("classroom", text="教室")
         tree.heading("students", text="选课人数")
@@ -2919,7 +2917,6 @@ class AdminWindow:
         tree.heading("action", text="操作")
         
         tree.column("teacher", width=150)
-        tree.column("semester", width=120)
         tree.column("time", width=180)
         tree.column("classroom", width=120)
         tree.column("students", width=120)
@@ -2936,7 +2933,6 @@ class AdminWindow:
             
             tree.insert("", "end", values=(
                 offering.get('teacher_name', '') or f"({offering.get('teacher_id', '')})",
-                offering.get('semester', ''),
                 offering.get('class_time', '') or '',
                 offering.get('classroom', '') or '',
                 students_info,
@@ -2951,9 +2947,9 @@ class AdminWindow:
                 item = tree.identify_row(event.y)
                 column = tree.identify_column(event.x)
                 
-                # 检查是否点击了"选课人数"列（第5列，索引为'#5'）
-                # columns顺序: teacher(#1), semester(#2), time(#3), classroom(#4), students(#5), status(#6), action(#7)
-                if not item or column != '#5':
+                # 检查是否点击了"选课人数"列（第4列，索引为'#4'）
+                # columns顺序: teacher(#1), time(#2), classroom(#3), students(#4), status(#5), action(#6)
+                if not item or column != '#4':
                     return
                 
                 # 获取offering_id
@@ -2991,7 +2987,7 @@ class AdminWindow:
             try:
                 # 如果点击的是"选课人数"列，不执行编辑操作
                 column = tree.identify_column(event.x)
-                if column == '#5':  # #5 是"选课人数"列
+                if column == '#4':  # #4 是"选课人数"列
                     return
                 
                 selection = tree.selection()
@@ -3243,27 +3239,6 @@ class AdminWindow:
                                         text_color="gray", width=400, anchor="w")
             teacher_combo.pack(side="left", fill="x", expand=True)
         
-        # 学期
-        semester_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
-        semester_frame.pack(fill="x", pady=10)
-        ctk.CTkLabel(semester_frame, text="学期 *", font=("Microsoft YaHei UI", 14, "bold"), 
-                    text_color=self.BUPT_BLUE, width=100, anchor="w").pack(side="left", padx=(0, 10))
-        
-        # 生成学期选项（当前学年及前后各2年）
-        from datetime import datetime
-        current_year = datetime.now().year
-        semester_options = []
-        for year_offset in range(-2, 3):  # 前后各2年
-            year = current_year + year_offset
-            semester_options.append(f"{year}-{year+1}-1")
-            semester_options.append(f"{year}-{year+1}-2")
-        
-        semester_var = ctk.StringVar(value=semester_options[-2] if semester_options else "")  # 默认当前学期
-        semester_combo = ctk.CTkComboBox(semester_frame, values=semester_options,
-                                        variable=semester_var, width=400, height=40,
-                                        font=("Microsoft YaHei UI", 14))
-        semester_combo.pack(side="left", fill="x", expand=True)
-        
         # 上课时间
         time_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
         time_frame.pack(fill="x", pady=10)
@@ -3307,11 +3282,6 @@ class AdminWindow:
                 messagebox.showwarning("提示", "请选择授课教师")
                 return
             
-            semester = semester_var.get().strip()
-            if not semester:
-                messagebox.showwarning("提示", "请选择学期")
-                return
-            
             # 提取教师ID
             teacher_id = teacher_selected.split(" - ")[0]
             
@@ -3319,7 +3289,6 @@ class AdminWindow:
             offering_data = {
                 'course_id': course_id,
                 'teacher_id': teacher_id,
-                'semester': semester,
                 'class_time': time_entry.get().strip() or None,
                 'classroom': classroom_entry.get().strip() or None,
                 'max_students': int(max_students_entry.get().strip()) if max_students_entry.get().strip().isdigit() else 60,
@@ -3333,7 +3302,7 @@ class AdminWindow:
                 course_manager = CourseManager(self.db)
                 offering_id = course_manager.add_course_offering(offering_data)
                 if offering_id:
-                    Logger.info(f"管理员添加开课计划: {course_id} - {teacher_id} - {semester}")
+                    Logger.info(f"管理员添加开课计划: {course_id} - {teacher_id}")
                     messagebox.showinfo("成功", "开课计划添加成功！")
                     dialog.destroy()
                     # 刷新开课计划列表
@@ -3480,28 +3449,6 @@ class AdminWindow:
                                           font=("Microsoft YaHei UI", 14))
             teacher_combo.pack(side="left", fill="x", expand=True)
             
-            # 学期
-            semester_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
-            semester_frame.pack(fill="x", pady=10)
-            ctk.CTkLabel(semester_frame, text="学期 *", font=("Microsoft YaHei UI", 14, "bold"), 
-                        text_color=self.BUPT_BLUE, width=100, anchor="w").pack(side="left", padx=(0, 10))
-            
-            # 生成学期选项（当前学年及前后各2年）
-            from datetime import datetime
-            current_year = datetime.now().year
-            semester_options = []
-            for year_offset in range(-2, 3):  # 前后各2年
-                year = current_year + year_offset
-                semester_options.append(f"{year}-{year+1}-1")
-                semester_options.append(f"{year}-{year+1}-2")
-            
-            current_semester = offering.get('semester', '')
-            semester_var = ctk.StringVar(value=current_semester if current_semester in semester_options else (semester_options[-2] if semester_options else ""))
-            semester_combo = ctk.CTkComboBox(semester_frame, values=semester_options,
-                                             variable=semester_var, width=400, height=40,
-                                             font=("Microsoft YaHei UI", 14))
-            semester_combo.pack(side="left", fill="x", expand=True)
-            
             # 上课时间
             time_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
             time_frame.pack(fill="x", pady=10)
@@ -3554,11 +3501,6 @@ class AdminWindow:
                     messagebox.showwarning("提示", "请选择授课教师")
                     return
                 
-                semester = semester_var.get().strip()
-                if not semester:
-                    messagebox.showwarning("提示", "请选择学期")
-                    return
-                
                 # 提取教师ID
                 teacher_id = teacher_selected.split(" - ")[0]
                 
@@ -3572,7 +3514,7 @@ class AdminWindow:
                         from core.course_manager import CourseManager
                         course_manager = CourseManager(self.db)
                         conflict = course_manager.check_classroom_conflict(
-                            semester, class_time, classroom, exclude_offering_id=offering_id
+                            class_time, classroom, exclude_offering_id=offering_id
                         )
                         if conflict:
                             messagebox.showerror("错误", 
@@ -3587,7 +3529,6 @@ class AdminWindow:
                 # 准备更新数据
                 update_data = {
                     'teacher_id': teacher_id,
-                    'semester': semester,
                     'class_time': class_time,
                     'classroom': classroom,
                     'max_students': int(max_students_entry.get().strip()) if max_students_entry.get().strip().isdigit() else 60,

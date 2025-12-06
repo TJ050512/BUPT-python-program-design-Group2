@@ -1955,15 +1955,33 @@ def bind_evening_public_offerings(db, semester: str="2024-2025-2"):
 def seed_colleges_and_majors(db: DBAdapter):
     """根据 COLLEGE_CATALOG 插入学院和其下的专业（每院≥2）。"""
     for code, name, majors in COLLEGE_CATALOG:
-        try:
-            db.insert_data("colleges", {"college_code": code, "name": name})
-        except Exception:
-            pass
-        for m in majors:
-            try:
-                db.insert_data("majors", {"college_code": code, "name": m})
-            except Exception:
+        # 检查学院是否已存在
+        existing = db.execute_query(
+            "SELECT college_code FROM colleges WHERE college_code=? LIMIT 1",
+            (code,)
+        )
+        if not existing:
+            # 学院不存在，插入
+            result = db.insert_data("colleges", {"college_code": code, "name": name})
+            if result is None:
+                # 插入失败（可能是 UNIQUE constraint），但这是预期的，静默处理
                 pass
+        else:
+            # 学院已存在，跳过
+            pass
+        
+        for m in majors:
+            # 检查专业是否已存在
+            existing_major = db.execute_query(
+                "SELECT major_id FROM majors WHERE college_code=? AND name=? LIMIT 1",
+                (code, m)
+            )
+            if not existing_major:
+                # 专业不存在，插入
+                result = db.insert_data("majors", {"college_code": code, "name": m})
+                if result is None:
+                    # 插入失败（可能是 UNIQUE constraint），但这是预期的，静默处理
+                    pass
 
 
 def seed_classrooms(db: DBAdapter):
@@ -2441,6 +2459,8 @@ def seed_all(db: DBAdapter, students: int = 200, teachers: int = 10, semester: s
         db.execute_update("DELETE FROM students")
         db.execute_update("DELETE FROM teachers")
         db.execute_update("DELETE FROM courses")
+        db.execute_update("DELETE FROM majors")  # 先删除专业（有外键依赖）
+        db.execute_update("DELETE FROM colleges")  # 再删除学院
         Logger.info("✅ 已清空旧数据")
     except Exception as e:
         Logger.warning(f"清空旧数据时出现警告（可能表不存在）: {e}")

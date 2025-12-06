@@ -7,6 +7,12 @@ import sys
 import os
 from pathlib import Path
 
+# 设置标准输出编码为UTF-8（Windows兼容）
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent))
 

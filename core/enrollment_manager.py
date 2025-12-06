@@ -44,7 +44,41 @@ class EnrollmentManager:
             
             if offering['current_students'] >= offering['max_students']:
                 return False, "该课程已满"
-            semester = offering["semester"]
+            
+            # 获取学期信息（从 offering 中获取，如果没有则从数据库查询）
+            semester = offering.get('semester')
+            Logger.debug(f"从offering获取semester: {repr(semester)}, offering_id={offering_id}")
+            
+            # 检查 semester 是否有有效值（不是 None 且不是空字符串）
+            if not semester or (isinstance(semester, str) and not semester.strip()):
+                # 如果 offering 中没有 semester，从数据库查询
+                Logger.debug(f"offering中没有semester，从数据库查询: offering_id={offering_id}")
+                off_rows = self.db.execute_query(
+                    "SELECT semester FROM course_offerings WHERE offering_id=? LIMIT 1",
+                    (offering_id,)
+                )
+                if not off_rows:
+                    Logger.error(f"无法从数据库获取offering信息: offering_id={offering_id}")
+                    return False, "无法获取课程学期信息"
+                
+                db_semester = off_rows[0].get('semester')
+                Logger.debug(f"从数据库查询到的semester: {repr(db_semester)}")
+                
+                if not db_semester or (isinstance(db_semester, str) and not db_semester.strip()):
+                    Logger.error(f"数据库中的semester也为空: offering_id={offering_id}, offering={offering}")
+                    return False, "无法获取课程学期信息"
+                semester = db_semester.strip() if isinstance(db_semester, str) else str(db_semester)
+            else:
+                semester = semester.strip() if isinstance(semester, str) else str(semester)
+            
+            # 最终验证 semester 有值
+            if not semester or not semester.strip():
+                Logger.error(f"最终验证失败: semester={repr(semester)}, offering_id={offering_id}")
+                return False, "无法获取课程学期信息"
+            
+            semester = semester.strip()  # 确保去除前后空格
+            Logger.info(f"选课学期确认: {repr(semester)}, offering_id={offering_id}")
+            
             # 2. 检查是否已选过该课程
             existing_enrollment = self._get_enrollment(student_id, offering_id)
             
@@ -68,32 +102,37 @@ class EnrollmentManager:
                 # 更新已存在的记录
                 count = self.db.update_data(
                     'enrollments',
-                    {'status': 'enrolled', 'semester': semester},  # ✅补 semester
+                    {'status': 'enrolled', 'semester': semester},
                     {'enrollment_id': existing_enrollment['enrollment_id']}
                 )
                 enrollment_id = existing_enrollment['enrollment_id'] if count > 0 else None
             else:
-                # 先查 offering 的 semester（保证 NOT NULL）
-                off_rows = self.db.execute_query(
-                    "SELECT semester FROM course_offerings WHERE offering_id=? LIMIT 1",
-                    (offering_id,)
-                )
-                if not off_rows:
-                    return False, "课程不存在"
-
-                semester = off_rows[0]["semester"]
-
+                # 再次验证 semester 有值
+                if not semester or not semester.strip():
+                    Logger.error(f"插入选课记录前验证失败: semester为空, offering_id={offering_id}, student_id={student_id}")
+                    return False, "无法获取课程学期信息"
+                
                 try:
+                    # 最后一次验证 semester 有值
+                    if not semester:
+                        Logger.error(f"插入前semester验证失败: semester={repr(semester)}, offering_id={offering_id}, student_id={student_id}")
+                        return False, "无法获取课程学期信息"
+                    
                     sql = """
                         INSERT INTO enrollments (student_id, offering_id, semester, status)
                         VALUES (?, ?, ?, ?)
                     """
+                    Logger.info(f"插入选课记录: student_id={student_id}, offering_id={offering_id}, semester={repr(semester)}")
                     self.db.cursor.execute(sql, (student_id, offering_id, semester, 'enrolled'))
                     self.db.conn.commit()
                     enrollment_id = self.db.cursor.lastrowid
+                    Logger.debug(f"选课记录插入成功: enrollment_id={enrollment_id}")
                 except sqlite3.OperationalError as db_error:
+                    error_msg = str(db_error)
+                    Logger.error(f"数据库操作错误: {error_msg}, semester={repr(semester)}, offering_id={offering_id}")
                     raise db_error
                 except Exception as db_error:
+                    Logger.error(f"插入选课记录异常: {db_error}, semester={repr(semester)}, offering_id={offering_id}")
                     raise db_error
             
             if enrollment_id:
@@ -103,7 +142,7 @@ class EnrollmentManager:
                 
                 try:
                     from data.database_interface import DatabaseInterface
-                    DatabaseInterface().sync_course_offering_counts(semester)
+                    DatabaseInterface().sync_course_offering_counts()
                 except Exception:
                     pass
 
@@ -476,4 +515,3 @@ class EnrollmentManager:
         
         result = self.db.execute_query(sql, (student_id, course_id))
         return result[0]['course_name'] if result else None
-
