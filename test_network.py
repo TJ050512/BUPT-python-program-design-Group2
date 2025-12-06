@@ -65,9 +65,7 @@ class TestNetworkServer:
         # 2. 获取可选课程
         def handle_get_courses(request):
             data = request.get('data', {})
-            semester = data.get('semester', '2024-2025-2')
-            
-            courses = self.course_manager.get_available_courses(semester)
+            courses = self.course_manager.get_available_courses()
             
             return Protocol.create_response(
                 status=Protocol.STATUS_SUCCESS,
@@ -80,10 +78,8 @@ class TestNetworkServer:
             data = request.get('data', {})
             student_id = data.get('student_id')
             offering_id = data.get('offering_id')
-            semester = data.get('semester', '2024-2025-2')
-            
             success, msg = self.enrollment_manager.enroll_course(
-                student_id, offering_id, semester
+                student_id, offering_id
             )
             
             if success:
@@ -101,10 +97,8 @@ class TestNetworkServer:
         def handle_get_enrollments(request):
             data = request.get('data', {})
             student_id = data.get('student_id')
-            semester = data.get('semester', '2024-2025-2')
-            
             enrollments = self.enrollment_manager.get_student_enrollments(
-                student_id, semester
+                student_id
             )
             
             return Protocol.create_response(
@@ -119,8 +113,8 @@ class TestNetworkServer:
             student_id = data.get('student_id')
             semester = data.get('semester')
             
-            grades = self.grade_manager.get_student_grades(student_id, semester)
-            gpa = self.grade_manager.calculate_student_gpa(student_id, semester)
+            grades = self.grade_manager.get_student_grades(student_id)
+            gpa = self.grade_manager.calculate_student_gpa(student_id)
             
             return Protocol.create_response(
                 status=Protocol.STATUS_SUCCESS,
@@ -154,9 +148,7 @@ class TestNetworkServer:
         def handle_get_teacher_courses(request):
             data = request.get('data', {})
             teacher_id = data.get('teacher_id')
-            semester = data.get('semester', '2024-2025-2')
-            
-            courses = self.course_manager.get_teacher_courses(teacher_id, semester)
+            courses = self.course_manager.get_teacher_courses(teacher_id)
             
             return Protocol.create_response(
                 status=Protocol.STATUS_SUCCESS,
@@ -223,7 +215,7 @@ def test_client_operations():
     print("\n[3] 测试获取可选课程...")
     request = Protocol.create_request(
         action='get_courses',
-        data={'semester': '2024-2025-2'}
+        data={}
     )
     response = client.send_request(request)
     if response and response.get('status') == Protocol.STATUS_SUCCESS:
@@ -245,7 +237,6 @@ def test_client_operations():
         data={
             'student_id': student_id,
             'offering_id': offering_id,
-            'semester': '2024-2025-2'
         }
     )
     response = client.send_request(request)
@@ -263,7 +254,6 @@ def test_client_operations():
         action='get_enrollments',
         data={
             'student_id': student_id,
-            'semester': '2024-2025-2'
         }
     )
     response = client.send_request(request)
@@ -281,7 +271,6 @@ def test_client_operations():
         action='get_grades',
         data={
             'student_id': student_id,
-            'semester': '2024-2025-2'
         }
     )
     response = client.send_request(request)
@@ -315,7 +304,6 @@ def test_client_operations():
         action='get_teacher_courses',
         data={
             'teacher_id': teacher_id,
-            'semester': '2024-2025-2'
         }
     )
     response = client.send_request(request)

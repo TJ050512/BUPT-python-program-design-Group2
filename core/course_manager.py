@@ -72,12 +72,9 @@ class CourseManager:
         
         return self.db.execute_query(sql, tuple(params) if params else None)
     
-    def get_course_offerings(self, semester: str = None) -> List[Dict]:
+    def get_course_offerings(self) -> List[Dict]:
         """
         获取开课计划
-        
-        Args:
-            semester: 学期（如：2024-2025-2）
         
         Returns:
             开课计划列表
@@ -91,7 +88,6 @@ class CourseManager:
                 c.course_type,
                 co.teacher_id,
                 t.name as teacher_name,
-                co.semester,
                 co.class_time,
                 co.classroom,
                 co.current_students,
@@ -103,10 +99,6 @@ class CourseManager:
         """
         
         params = None
-        if semester:
-            sql += " WHERE co.semester=?"
-            params = (semester,)
-        
         sql += " ORDER BY co.course_id"
         
         return self.db.execute_query(sql, params)
@@ -133,7 +125,6 @@ class CourseManager:
                 co.teacher_id,
                 t.name as teacher_name,
                 t.title,
-                co.semester,
                 co.class_time,
                 co.classroom,
                 co.current_students,
@@ -148,41 +139,10 @@ class CourseManager:
         result = self.db.execute_query(sql, (offering_id,))
         return result[0] if result else None
     
-    #def get_available_courses(self) -> List[Dict]:
-        """
-        获取可选课程（状态为open且未满）
-        
-        Args:
-        
-        Returns:
-            可选课程列表
-        """
-    #    sql = """
-    #        SELECT 
-    #            co.offering_id,
-    #            co.course_id,
-    #            c.course_name,
-    #            c.credits,
-    #            c.course_type,
-    #            co.teacher_id,
-    #            t.name as teacher_name,
-    #            co.class_time,
-    #            co.classroom,
-    #            co.current_students,
-    #            co.max_students,
-    #            co.status
-    #        FROM course_offerings co
-    #        JOIN courses c ON co.course_id = c.course_id
-    #        JOIN teachers t ON co.teacher_id = t.teacher_id
-    #        WHERE co.status='open' AND co.current_students < co.max_students
-    #        ORDER BY c.course_type, co.course_id
-    #    """
-        
-    #    return self.db.execute_query(sql)
-    def get_available_courses(self, semester: str, student_id: str=None) -> List[Dict]:
+    def get_available_courses(self, student_id: str=None) -> List[Dict]:
         from data.database_interface import DatabaseInterface
         di = DatabaseInterface()
-        return di.query_offerings_by_semester(semester, student_id)
+        return di.query_available_offerings(student_id)
     
     def get_teacher_courses(self, teacher_id: str) -> List[Dict]:
         """
@@ -278,14 +238,13 @@ class CourseManager:
             Logger.error(f"删除课程失败: {e}")
             return False
     
-    def check_classroom_conflict(self, semester: str, class_time: str, classroom: str, 
+    def check_classroom_conflict(self, class_time: str, classroom: str, 
                                  exclude_offering_id: Optional[int] = None) -> Optional[str]:
         """
         检查教室和时间冲突
         如果同一时间段有其他课程使用相同教室，返回冲突信息
         
         Args:
-            semester: 学期
             class_time: 上课时间字符串（如：周一3-4节，周四3-4节）
             classroom: 教室
             exclude_offering_id: 排除的开课计划ID（编辑时使用）
@@ -312,9 +271,9 @@ class CourseManager:
             FROM course_offerings co
             JOIN courses c ON co.course_id = c.course_id
             JOIN teachers t ON co.teacher_id = t.teacher_id
-            WHERE co.semester = ? AND co.classroom = ?
+            WHERE co.classroom = ?
         """
-        params = [semester, classroom]
+        params = [classroom]
         
         if exclude_offering_id:
             sql += " AND co.offering_id != ?"
@@ -401,12 +360,11 @@ class CourseManager:
         """
         try:
             # 检查教室冲突
-            semester = offering_data.get('semester')
             class_time = offering_data.get('class_time')
             classroom = offering_data.get('classroom')
             
-            if semester and class_time and classroom:
-                conflict = self.check_classroom_conflict(semester, class_time, classroom)
+            if class_time and classroom:
+                conflict = self.check_classroom_conflict(class_time, classroom)
                 if conflict:
                     error_msg = f"教室冲突：{classroom} 在相同时间段已被 {conflict} 使用"
                     Logger.warning(error_msg)
@@ -457,4 +415,3 @@ class CourseManager:
         except Exception as e:
             Logger.error(f"更新选课人数失败: {e}")
             return False
-

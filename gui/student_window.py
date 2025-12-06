@@ -398,11 +398,8 @@ class StudentWindow:
         refresh_button.pack(side="left", padx=10)
         
         # 获取可选课程
-        current_semester = "2024-2025-2" 
-        
-        # 传入学期和当前用户的ID
+        # 传入当前用户的ID
         courses = self.course_manager.get_available_courses(
-            current_semester, 
             self.user.id
         )
         
@@ -533,8 +530,7 @@ class StudentWindow:
             self.course_selection_tree.delete(item)
         
         # 获取所有可选课程 (修复：补全参数)
-        current_semester = "2024-2025-2"  # 建议最好定义在类常量或配置文件中
-        all_courses = self.course_manager.get_available_courses(current_semester, self.user.id)
+        all_courses = self.course_manager.get_available_courses(self.user.id)
         
         keyword_lower = keyword.strip().lower() if keyword else ""
         found_any = False
@@ -1041,7 +1037,7 @@ class StudentWindow:
             no_data_label.pack(pady=50)
             return
         
-        # 查询培养方案
+        # 查询培养方案 - 包含学期信息
         sql = """
             SELECT cm.grade, cm.term, cm.course_id, c.course_name, 
                    c.credits, cm.category
@@ -1049,7 +1045,10 @@ class StudentWindow:
             JOIN majors m ON cm.major_id = m.major_id
             JOIN courses c ON cm.course_id = c.course_id
             WHERE m.name = ?
-            ORDER BY cm.grade, cm.term, cm.category DESC, cm.course_id
+            ORDER BY cm.grade, 
+                     CASE cm.term WHEN '秋' THEN 1 WHEN '春' THEN 2 END,
+                     cm.category DESC, 
+                     cm.course_id
         """
         
         curriculum_data = self.db.execute_query(sql, (major_name,))
@@ -1084,26 +1083,26 @@ class StudentWindow:
         style.map("Curriculum.Treeview.Heading",
                  background=[("active", "#D0E8F0")])
         
-        # 创建表格
+        # 创建表格 - 包含学期列
         tree = ttk.Treeview(
             table_frame,
-            columns=("semester", "course_id", "course_name", "credits", "category"),
+            columns=("grade_term", "course_id", "course_name", "credits", "category"),
             show="headings",
             style="Curriculum.Treeview",
             height=20
         )
         
         # 设置列标题
-        tree.heading("semester", text="学期")
+        tree.heading("grade_term", text="学期")
         tree.heading("course_id", text="课程代码")
         tree.heading("course_name", text="课程名称")
         tree.heading("credits", text="学分")
         tree.heading("category", text="类型")
         
         # 设置列宽
-        tree.column("semester", width=120, anchor="center")
+        tree.column("grade_term", width=140, anchor="center")
         tree.column("course_id", width=100, anchor="center")
-        tree.column("course_name", width=400, anchor="w")
+        tree.column("course_name", width=380, anchor="w")
         tree.column("credits", width=80, anchor="center")
         tree.column("category", width=80, anchor="center")
         
@@ -1120,15 +1119,13 @@ class StudentWindow:
             credits = record['credits']
             category = record['category']
             
-            # 学期名称
-            term_cn = "秋季" if term == "fall" else "春季"
             grade_cn = {1: "一", 2: "二", 3: "三", 4: "四"}.get(grade, str(grade))
-            semester_text = f"大{grade_cn}（{term_cn}）"
+            grade_term_text = f"大{grade_cn}（{term}）"
             
             # 插入数据
             tag = "required" if category == "必修" else "elective"
             tree.insert("", "end", values=(
-                semester_text,
+                grade_term_text,
                 course_id,
                 course_name,
                 f"{credits}",
@@ -1153,4 +1150,3 @@ class StudentWindow:
     def on_close(self):
         """关闭窗口"""
         self.do_logout()
-

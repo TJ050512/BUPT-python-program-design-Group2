@@ -44,7 +44,7 @@ class EnrollmentManager:
             
             if offering['current_students'] >= offering['max_students']:
                 return False, "该课程已满"
-            semester = offering["semester"]
+            
             # 2. 检查是否已选过该课程
             existing_enrollment = self._get_enrollment(student_id, offering_id)
             
@@ -68,27 +68,17 @@ class EnrollmentManager:
                 # 更新已存在的记录
                 count = self.db.update_data(
                     'enrollments',
-                    {'status': 'enrolled', 'semester': semester},  # ✅补 semester
+                    {'status': 'enrolled'},
                     {'enrollment_id': existing_enrollment['enrollment_id']}
                 )
                 enrollment_id = existing_enrollment['enrollment_id'] if count > 0 else None
             else:
-                # 先查 offering 的 semester（保证 NOT NULL）
-                off_rows = self.db.execute_query(
-                    "SELECT semester FROM course_offerings WHERE offering_id=? LIMIT 1",
-                    (offering_id,)
-                )
-                if not off_rows:
-                    return False, "课程不存在"
-
-                semester = off_rows[0]["semester"]
-
                 try:
                     sql = """
-                        INSERT INTO enrollments (student_id, offering_id, semester, status)
-                        VALUES (?, ?, ?, ?)
+                        INSERT INTO enrollments (student_id, offering_id, status)
+                        VALUES (?, ?, ?)
                     """
-                    self.db.cursor.execute(sql, (student_id, offering_id, semester, 'enrolled'))
+                    self.db.cursor.execute(sql, (student_id, offering_id, 'enrolled'))
                     self.db.conn.commit()
                     enrollment_id = self.db.cursor.lastrowid
                 except sqlite3.OperationalError as db_error:
@@ -103,7 +93,7 @@ class EnrollmentManager:
                 
                 try:
                     from data.database_interface import DatabaseInterface
-                    DatabaseInterface().sync_course_offering_counts(semester)
+                    DatabaseInterface().sync_course_offering_counts()
                 except Exception:
                     pass
 
@@ -454,4 +444,3 @@ class EnrollmentManager:
         
         result = self.db.execute_query(sql, (student_id, course_id))
         return result[0]['course_name'] if result else None
-

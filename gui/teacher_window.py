@@ -57,9 +57,8 @@ class TeacherWindow:
         y = (screen_height - window_height) // 2
         self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
         
-        # 配置matplotlib中文字体
-        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei']
-        plt.rcParams['axes.unicode_minus'] = False
+        # 配置matplotlib中文字体（支持多平台）
+        self._setup_matplotlib_fonts()
         
         # 创建界面
         self.create_widgets()
@@ -68,6 +67,26 @@ class TeacherWindow:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         Logger.info(f"教师端窗口打开: {user.name}")
+    
+    def _setup_matplotlib_fonts(self):
+        """配置matplotlib中文字体"""
+        import platform
+        system = platform.system()
+        
+        if system == 'Darwin':  # macOS
+            # macOS系统字体
+            plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'Heiti SC', 'STHeiti']
+        elif system == 'Windows':
+            # Windows系统字体
+            plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'KaiTi', 'FangSong']
+        else:  # Linux
+            # Linux系统字体
+            plt.rcParams['font.sans-serif'] = ['WenQuanYi Micro Hei', 'Droid Sans Fallback', 'DejaVu Sans']
+        
+        # 解决负号显示问题
+        plt.rcParams['axes.unicode_minus'] = False
+        
+        Logger.info(f"matplotlib字体配置完成: {plt.rcParams['font.sans-serif']}")
     
     def create_widgets(self):
         """创建界面组件"""
@@ -569,7 +588,7 @@ class TeacherWindow:
             self.content_frame,
             text="成绩录入",
             font=("Microsoft YaHei UI", 24, "bold"),
-            text_color=self.BUPT_BLUE
+            text_color="#1a1a1a"  # 深色文字，更清晰
         )
         title.pack(pady=20, anchor="w", padx=20)
         

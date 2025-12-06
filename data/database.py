@@ -140,8 +140,8 @@ class Database:
             offering_id     INTEGER PRIMARY KEY AUTOINCREMENT,
             course_id       TEXT NOT NULL,
             teacher_id      TEXT NOT NULL,
-            semester        TEXT NOT NULL,
 
+            semester        TEXT,            -- ✅ 学期（如 2024-2025-1）
             department      TEXT,            -- ✅ 开课学院
             ta1_id          TEXT,            -- ✅ 助教1
             ta2_id          TEXT,            -- ✅ 助教2
@@ -344,7 +344,7 @@ class Database:
                 enrollment_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 student_id TEXT NOT NULL,
                 offering_id INTEGER NOT NULL,
-                semester TEXT NOT NULL,
+                semester TEXT,
                 enrollment_date TEXT DEFAULT CURRENT_TIMESTAMP,
                 status TEXT DEFAULT 'enrolled',
                 FOREIGN KEY (student_id) REFERENCES students(student_id),
@@ -492,8 +492,10 @@ class Database:
         for sql in [
             "ALTER TABLE students ADD COLUMN admission_type TEXT",
             "ALTER TABLE students ADD COLUMN program_years INTEGER",
+            "ALTER TABLE course_offerings ADD COLUMN semester TEXT",
             "ALTER TABLE course_offerings ADD COLUMN department TEXT",
-            "ALTER TABLE course_offerings ADD COLUMN is_cross_major_open INTEGER DEFAULT 0"
+            "ALTER TABLE course_offerings ADD COLUMN is_cross_major_open INTEGER DEFAULT 0",
+            "ALTER TABLE enrollments ADD COLUMN semester TEXT"
         ]:
             try: self.cursor.execute(sql)
             except Exception: pass

@@ -242,7 +242,6 @@ class CourseOffering:
     ta2_id: Optional[str] = None           # 助教 2
     teacher_name: Optional[str] = None
     department: Optional[str] = None       # 开课学院
-    semester: str = ''
     class_time: Optional[str] = None
     classroom: Optional[str] = None
     current_students: int = 0
@@ -265,7 +264,6 @@ class CourseOffering:
             'ta2_id': self.ta2_id,
             'department': self.department,
             'teacher_name': self.teacher_name,
-            'semester': self.semester,
             'class_time': self.class_time,
             'classroom': self.classroom,
             'current_students': self.current_students,
@@ -285,7 +283,6 @@ class CourseOffering:
             ta2_id=d.get('ta2_id'),                 # ✅ 补上
             teacher_name=d.get("teacher_name") or d.get("name"),
             department=d.get('department'),         # ✅ 补上
-            semester=d.get('semester') or '',
             class_time=d.get('class_time'),
             classroom=d.get('classroom'),
             current_students=int(d.get('current_students') or 0),
@@ -301,7 +298,6 @@ class Enrollment:
     enrollment_id: Optional[int] = None
     student_id: str = ''
     offering_id: int = 0
-    semester: str = ''
     enrollment_date: Optional[str] = None
     status: str = 'enrolled'
 
@@ -311,7 +307,6 @@ class Enrollment:
             'enrollment_id': self.enrollment_id,
             'student_id': self.student_id,
             'offering_id': self.offering_id,
-            'semester': self.semester,
             'enrollment_date': _parse_datetime(self.enrollment_date) if self.enrollment_date else None,
             'status': self.status
         }
@@ -322,7 +317,6 @@ class Enrollment:
             enrollment_id=d.get('enrollment_id') or d.get('id'),
             student_id=str(d.get('student_id') or ''),
             offering_id=int(d.get('offering_id') or 0),
-            semester=d.get('semester') or '',
             enrollment_date=_parse_datetime(d.get('enrollment_date')) if d.get('enrollment_date') else None,
             status=d.get('status') or 'enrolled'
         )
@@ -340,7 +334,6 @@ class Grade:
     grade_level: Optional[str] = None
     gpa: Optional[float] = None
     credits: float = 0.0
-    semester: Optional[str] = None
     exam_type: Optional[str] = None
     remarks: Optional[str] = None
     is_makeup: Optional[int] = 0
@@ -389,8 +382,7 @@ class Grade:
             'score': self.score,
             'grade_level': self.grade_level,
             'gpa': self.gpa,
-            'credits': self.credits,
-            'semester': self.semester
+            'credits': self.credits
         }
 
     @classmethod
@@ -404,8 +396,7 @@ class Grade:
             score=(None if d.get('score') is None else float(d.get('score'))),
             grade_level=d.get('grade_level'),
             gpa=(None if d.get('gpa') is None else float(d.get('gpa'))),
-            credits=float(d.get('credits') or 0.0),
-            semester=d.get('semester')
+            credits=float(d.get('credits') or 0.0)
         )
 
 

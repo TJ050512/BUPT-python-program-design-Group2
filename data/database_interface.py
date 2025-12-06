@@ -76,19 +76,18 @@ class DatabaseInterface:
         self.db: Optional[_DBAdapter] = None
         self._init_database()
 
-    def _get_academic_year(self, student_grade: int, semester: str) -> int:
+    def _get_academic_year(self, student_grade: int) -> int:
         """
         计算当前是大几：
-        semester 形如 '2024-2025-1'
         student_grade 为入学年份（如 2022）
         """
         try:
-            start_year = int(semester.split("-")[0])
+            current_year = datetime.now().year
+            diff = current_year - int(student_grade)
+            year = diff + 1
+            return min(max(year, 1), 4)
         except Exception:
             return 1
-        diff = start_year - int(student_grade)
-        year = diff + 1
-        return min(max(year, 1), 4)
 
     def _get_db_path(self) -> str:
         # 获取数据库路径逻辑不变
@@ -178,7 +177,7 @@ class DatabaseInterface:
             Logger.error(f"查询教师失败: {e}", exc_info=True)
             return None
 
-    def sync_course_offering_counts(self, semester: Optional[str] = None) -> int:
+    def sync_course_offering_counts(self) -> int:
         """
         同步 course_offerings.current_students 和 status
         逻辑对齐 sync_student_counts.py
@@ -188,57 +187,28 @@ class DatabaseInterface:
             return 0
 
         try:
-            if semester:
-                # 1) 同步人数（只算 enrolled/completed）
-                self.db.execute("""
-                    UPDATE course_offerings
-                    SET current_students = (
-                        SELECT COUNT(*)
-                        FROM enrollments
-                        WHERE enrollments.offering_id = course_offerings.offering_id
-                          AND enrollments.status IN ('enrolled', 'completed')
-                          AND enrollments.semester = ?
-                    )
-                    WHERE semester = ?
-                """, (semester, semester))
-            else:
-                self.db.execute("""
-                    UPDATE course_offerings
-                    SET current_students = (
-                        SELECT COUNT(*)
-                        FROM enrollments
-                        WHERE enrollments.offering_id = course_offerings.offering_id
-                          AND enrollments.status IN ('enrolled', 'completed')
-                    )
-                """)
+            # 1) 同步人数（只算 enrolled/completed）
+            self.db.execute("""
+                UPDATE course_offerings
+                SET current_students = (
+                    SELECT COUNT(*)
+                    FROM enrollments
+                    WHERE enrollments.offering_id = course_offerings.offering_id
+                      AND enrollments.status IN ('enrolled', 'completed')
+                )
+            """)
 
             # 2) 同步状态
-            if semester:
-                self.db.execute("""
-                    UPDATE course_offerings
-                    SET status = CASE
-                        WHEN current_students >= max_students THEN 'full'
-                        ELSE 'open'
-                    END
-                    WHERE semester = ?
-                """, (semester,))
-            else:
-                self.db.execute("""
-                    UPDATE course_offerings
-                    SET status = CASE
-                        WHEN current_students >= max_students THEN 'full'
-                        ELSE 'open'
-                    END
-                """)
+            self.db.execute("""
+                UPDATE course_offerings
+                SET status = CASE
+                    WHEN current_students >= max_students THEN 'full'
+                    ELSE 'open'
+                END
+            """)
 
-            # 3) 返回更新量（粗略：该学期 offering 数）
-            if semester:
-                rows = self.db.query(
-                    "SELECT COUNT(*) AS c FROM course_offerings WHERE semester=?",
-                    (semester,)
-                )
-            else:
-                rows = self.db.query("SELECT COUNT(*) AS c FROM course_offerings")
+            # 3) 返回更新量
+            rows = self.db.query("SELECT COUNT(*) AS c FROM course_offerings")
             return int(rows[0]["c"]) if rows else 0
 
         except Exception as e:
@@ -288,14 +258,13 @@ class DatabaseInterface:
             Logger.error(f"更新最后登录时间失败: {e}", exc_info=True)
             return False
 
-    def query_my_enrollments_by_student_id_and_semester(self, student_id: str, semester: Optional[str] = None) -> List[Dict]:
+    def query_my_enrollments_by_student_id(self, student_id: str) -> List[Dict]:
         """
-        查询学生在指定学期（或所有学期）已选课程的详细信息，使用 course_offerings 的 class_time 字段（节次文本）。
+        查询学生已选课程的详细信息，使用 course_offerings 的 class_time 字段（节次文本）。
         """
         sql = """
             SELECT 
-                e.enrollment_id, 
-                e.semester,
+                e.enrollment_id,
                 c.course_id, c.course_name, c.credits, 
                 t.name AS teacher_name, 
                 o.class_time, -- 🎯 直接读取节次文本字段
@@ -309,19 +278,6 @@ class DatabaseInterface:
             WHERE e.student_id = ?
         """
         params: List[Any] = [student_id]
-        
-        # 筛选学期
-        # 如果没传 semester，就自动用该学生最新的一个学期
-        if not semester:
-            sem_rows = self.db.query(
-                "SELECT DISTINCT semester FROM enrollments WHERE student_id=? ORDER BY semester DESC LIMIT 1",
-                (student_id,)
-            )
-            if sem_rows:
-                semester = sem_rows[0]["semester"]
-        if semester:
-            sql += " AND e.semester = ?"
-            params.append(semester)
 
         rows = self.db.query(sql, tuple(params)) if self.db else []
         
@@ -332,7 +288,6 @@ class DatabaseInterface:
             if schedule_text:
                  results.append({
                     "enrollment_id": row["enrollment_id"],
-                    "semester": row["semester"],
                     "course_id": row["course_id"],
                     "course_name": row["course_name"],
                     "credits": row["credits"],
@@ -479,10 +434,9 @@ class DatabaseInterface:
             Logger.error(f"关闭数据库连接失败: {e}", exc_info=True)
 
     # ============ 课程/开课查询 ============
-    def query_offerings_by_semester(self, semester: str, student_id: str = None) -> List[Dict]:
+    def query_available_offerings(self, student_id: str = None) -> List[Dict]:
         """
-        查询本学期所有【可选】开课班级：
-        - 只看传入的 semester
+        查询所有【可选】开课班级：
         - 只返回 status='open' 且已排好课且未满员的课程
         - 如果传 student_id，则按培养方案的 grade_recommendation 过滤只看本学年课程
         """
@@ -502,7 +456,8 @@ class DatabaseInterface:
             if stu_rows:
                 grade = int(stu_rows[0].get("grade") or 0)
                 major_id = stu_rows[0].get("major_id")
-                academic_year = self._get_academic_year(grade, semester)
+                # 根据年级直接计算学年（1->1, 2->2, 3->3, 4->4）
+                academic_year = self._get_academic_year(grade)
 
                 if major_id:
                     pc_rows = self.db.query(
@@ -532,7 +487,6 @@ class DatabaseInterface:
             SELECT
                 o.offering_id,
                 o.course_id,
-                o.semester,
                 o.max_students,
                 o.current_students,
                 o.status,
@@ -557,8 +511,7 @@ class DatabaseInterface:
             LEFT JOIN offering_sessions os ON o.offering_id = os.offering_id
             LEFT JOIN time_slots ts ON os.slot_id = ts.slot_id
             LEFT JOIN classrooms r ON os.classroom_id = r.classroom_id
-            WHERE o.semester = ?
-            AND o.status = 'open'
+            WHERE o.status = 'open'
             AND o.class_time IS NOT NULL
             AND o.class_time <> '未排课'
             AND o.current_students < o.max_students
@@ -567,7 +520,6 @@ class DatabaseInterface:
         params: List[Any] = []
         if student_id:
             params.append(student_id)  # 对应 is_enrolled 子查询里的 ?
-        params.append(semester)        # 对应 WHERE o.semester = ?
 
         # ③ 如果学生信息齐全，则追加“按学年过滤”
         if student_id and major_id and academic_year:
