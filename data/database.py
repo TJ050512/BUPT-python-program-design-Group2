@@ -306,6 +306,9 @@ class Database:
         ''')
 
         # === 课程矩阵表（用于前端显示培养方案） ===
+        # 注意：同一门课程可能在不同年级、不同学期都需要开课
+        # 例如：ML101 在大一秋季，ML201 在大二秋季
+        # 所以 UNIQUE 约束应该是 (major_id, grade, term, course_id)
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS curriculum_matrix (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -319,7 +322,7 @@ class Database:
                 credits REAL NOT NULL,
                 FOREIGN KEY (major_id) REFERENCES majors(major_id),
                 FOREIGN KEY (course_id) REFERENCES courses(course_id),
-                UNIQUE(major_id, course_id)
+                UNIQUE(major_id, grade, term, course_id)
             )
         ''')
 
@@ -391,13 +394,14 @@ class Database:
 
         # === 触发器：防止同一门课程重复选课 (即使老师不同) ===
         # 目标：在插入 enrollments 之前，检查该学生是否已经选择了该课程的任一班级
+        # 注意：允许在不同学期选择同一门课程（如EN103和EN104可以在不同学期选）
         self.cursor.executescript('''
             CREATE TRIGGER IF NOT EXISTS trg_single_course_enrollment_bi
             BEFORE INSERT ON enrollments
             BEGIN
                 SELECT
                     CASE
-                        -- 检查学生是否已经选了这门课程的任何一个班级
+                        -- 检查学生是否已经选了这门课程的任何一个班级（同一学期内）
                         WHEN EXISTS (
                             SELECT 1
                             FROM enrollments e
@@ -405,7 +409,9 @@ class Database:
                             JOIN course_offerings o ON e.offering_id = o.offering_id
                             WHERE e.student_id = NEW.student_id -- 目标学生
                               -- 当前尝试插入的 offering_id 对应的 course_id
-                              AND o.course_id = (SELECT course_id FROM course_offerings WHERE offering_id = NEW.offering_id) 
+                              AND o.course_id = (SELECT course_id FROM course_offerings WHERE offering_id = NEW.offering_id)
+                              -- 关键：只检查同一学期内的重复选课
+                              AND e.semester = NEW.semester
                         )
                         THEN RAISE(ABORT, '该学生已选了该课程的任一班级，不能重复选择')
                     END;

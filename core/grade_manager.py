@@ -123,17 +123,36 @@ class GradeManager:
                 c.course_name,
                 c.credits,
                 c.course_type,
-                t.name as teacher_name
+                t.name as teacher_name,
+                e.semester
             FROM grades g
             JOIN enrollments e ON g.enrollment_id = e.enrollment_id
             JOIN course_offerings co ON g.offering_id = co.offering_id
             JOIN courses c ON co.course_id = c.course_id
             JOIN teachers t ON co.teacher_id = t.teacher_id
             WHERE g.student_id = ?
-            ORDER BY c.course_id
+            ORDER BY e.semester DESC, c.course_id
         """
         
-        return self.db.execute_query(sql, (student_id,))
+        grades = self.db.execute_query(sql, (student_id,))
+        
+        # 不去重：不同学期的不同课程（如PE103和PE104）应该都显示
+        # 只过滤掉同一课程在同一学期的重复成绩记录
+        # 注意：使用 enrollments.semester 而不是 course_offerings.semester
+        # 因为学生选课的学期信息存储在 enrollments 表中
+        seen_enrollments = set()  # (course_id, semester) 组合
+        unique_grades = []
+        for grade in grades:
+            course_id = grade['course_id']
+            semester = grade.get('semester', '')
+            key = (course_id, semester)
+            
+            # 如果这个 (course_id, semester) 组合还没见过，则保留
+            if key not in seen_enrollments:
+                seen_enrollments.add(key)
+                unique_grades.append(grade)
+        
+        return unique_grades
     
     def get_course_grades(self, offering_id: int) -> List[Dict]:
         """

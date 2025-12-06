@@ -44,6 +44,20 @@ def main():
         # 设置环境
         setup_environment()
         
+        # 从命令行参数或环境变量获取当前学期
+        # 如果生成数据时指定了学期（如 2024-2025-2），GUI应该只显示该学期的课程
+        import sys
+        if len(sys.argv) > 1:
+            semester = sys.argv[1]
+            os.environ["CURRENT_SEMESTER"] = semester
+            Logger.info(f"从命令行参数设置当前学期: {semester}")
+        elif "CURRENT_SEMESTER" not in os.environ:
+            # 默认学期
+            os.environ["CURRENT_SEMESTER"] = "2024-2025-2"
+            Logger.info(f"使用默认学期: 2024-2025-2")
+        else:
+            Logger.info(f"使用环境变量中的学期: {os.environ['CURRENT_SEMESTER']}")
+        
         # 设置customtkinter外观
         ctk.set_appearance_mode("light")  # 浅色模式（北邮主题）
         ctk.set_default_color_theme("blue")  # 蓝色主题

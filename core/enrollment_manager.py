@@ -57,8 +57,8 @@ class EnrollmentManager:
             if same_course_check:
                 return False, f"您已选择了【{same_course_check}】，不能重复选择同一门课程"
             
-            # 3. 检查时间冲突
-            conflict = self._check_time_conflict(student_id, offering['class_time'])
+            # 3. 检查时间冲突（包括公选课之间的冲突检查）
+            conflict = self._check_time_conflict(student_id, offering['class_time'], offering_id)
             if conflict:
                 return False, f"与已选课程【{conflict}】时间冲突"
             
@@ -205,6 +205,7 @@ class EnrollmentManager:
                 e.offering_id,
                 e.enrollment_date,
                 e.status,
+                COALESCE(e.semester, co.semester) as semester,
                 co.course_id,
                 c.course_name,
                 c.credits,
@@ -226,7 +227,7 @@ class EnrollmentManager:
             sql += " AND e.status = ?"
             params.append(status)
         
-        sql += " ORDER BY c.course_id"
+        sql += " ORDER BY e.semester DESC, c.course_id"
         
         return self.db.execute_query(sql, tuple(params))
     
@@ -315,13 +316,14 @@ class EnrollmentManager:
         result = self.db.execute_query(sql, (student_id, offering_id))
         return result[0]['count'] > 0 if result else False
     
-    def _check_time_conflict(self, student_id: str, class_time: str) -> Optional[str]:
+    def _check_time_conflict(self, student_id: str, class_time: str, offering_id: int = None) -> Optional[str]:
         """
         检查时间冲突
         
         Args:
             student_id: 学号
             class_time: 要检查的课程时间字符串
+            offering_id: 开课计划ID（可选，用于判断是否是公选课）
         
         Returns:
             冲突的课程名称，无冲突返回None
@@ -334,11 +336,27 @@ class EnrollmentManager:
         if not current_time_slots:
             return None
         
+        # 检查当前要选的课程是否是公选课
+        is_current_public_elective = False
+        if offering_id:
+            current_offering_info = self.db.execute_query(
+                """
+                SELECT c.is_public_elective 
+                FROM course_offerings co
+                JOIN courses c ON co.course_id = c.course_id
+                WHERE co.offering_id = ?
+                """,
+                (offering_id,)
+            )
+            if current_offering_info and len(current_offering_info) > 0:
+                is_current_public_elective = bool(current_offering_info[0].get('is_public_elective', 0))
+        
         # 获取学生已选的所有课程及其时间
         sql = """
             SELECT 
                 co.class_time,
-                c.course_name
+                c.course_name,
+                c.is_public_elective
             FROM enrollments e
             JOIN course_offerings co ON e.offering_id = co.offering_id
             JOIN courses c ON co.course_id = c.course_id
@@ -358,6 +376,10 @@ class EnrollmentManager:
             
             # 检查是否有时间段重叠
             if current_time_slots & enrolled_time_slots:  # 使用集合交集检查
+                # 如果当前课程和已选课程都是公选课，特别提示
+                is_enrolled_public_elective = bool(course.get('is_public_elective', 0))
+                if is_current_public_elective and is_enrolled_public_elective:
+                    return f"公选课【{course.get('course_name', '')}】与当前公选课时间冲突"
                 return course.get('course_name', '')
         
         return None
@@ -401,8 +423,8 @@ class EnrollmentManager:
                 start_period = int(match.group(2))
                 end_period = int(match.group(3))
                 
-                # 确保节次在合理范围内（1-12节）
-                if start_period < 1 or end_period > 12 or start_period > end_period:
+                # 确保节次在合理范围内（1-14节，支持晚上课程）
+                if start_period < 1 or end_period > 14 or start_period > end_period:
                     continue
                 
                 weekday = weekday_map.get(weekday_str)

@@ -505,17 +505,38 @@ class DatabaseInterface:
                 academic_year = self._get_academic_year(grade, semester)
 
                 if major_id:
+                    # 判断当前学期是秋季还是春季
+                    sem_idx = semester.split("-")[-1]  # "1" or "2"
+                    is_autumn = (sem_idx == "1")
+                    
+                    # 查询必修课程，并匹配学期（秋/春）
+                    # 使用 curriculum_matrix 表来匹配学期
                     pc_rows = self.db.query(
                         """
-                        SELECT course_id 
-                        FROM program_courses
-                        WHERE major_id=? 
-                        AND course_category='必修'
-                        AND (grade_recommendation IS NULL OR grade_recommendation=?)
+                        SELECT DISTINCT cm.course_id 
+                        FROM curriculum_matrix cm
+                        WHERE cm.major_id=? 
+                        AND cm.category='必修'
+                        AND cm.grade=?
+                        AND cm.term=?
                         """,
-                        (major_id, academic_year)
+                        (major_id, academic_year, '秋' if is_autumn else '春')
                     )
                     required_course_ids = {r["course_id"] for r in pc_rows}
+                    
+                    # 如果没有在 curriculum_matrix 中找到，回退到 program_courses（兼容旧数据）
+                    if not required_course_ids:
+                        pc_rows = self.db.query(
+                            """
+                            SELECT course_id 
+                            FROM program_courses
+                            WHERE major_id=? 
+                            AND course_category='必修'
+                            AND grade_recommendation=?
+                            """,
+                            (major_id, academic_year)
+                        )
+                        required_course_ids = {r["course_id"] for r in pc_rows}
 
         # ② is_enrolled 字段：有 student 就算，没 student 就给 0
         if student_id:
@@ -569,11 +590,23 @@ class DatabaseInterface:
             params.append(student_id)  # 对应 is_enrolled 子查询里的 ?
         params.append(semester)        # 对应 WHERE o.semester = ?
 
-        # ③ 如果学生信息齐全，则追加“按学年过滤”
+        # ③ 如果学生信息齐全，则追加"按学年和学期过滤"
         if student_id and major_id and academic_year:
+            # 判断当前学期是秋季还是春季
+            sem_idx = semester.split("-")[-1]  # "1" or "2"
+            is_autumn = (sem_idx == "1")
+            
             sql += """
             AND (
                     c.is_public_elective = 1
+                    OR EXISTS (
+                        SELECT 1
+                        FROM curriculum_matrix cm
+                        WHERE cm.course_id = o.course_id
+                        AND cm.major_id = ?
+                        AND cm.grade = ?
+                        AND cm.term = ?
+                    )
                     OR EXISTS (
                         SELECT 1
                         FROM program_courses pc
@@ -584,21 +617,45 @@ class DatabaseInterface:
                     OR o.is_cross_major_open = 1
                 )
             """
-            params.extend([major_id, academic_year])
+            params.extend([major_id, academic_year, '秋' if is_autumn else '春', major_id, academic_year])
 
         sql += " ORDER BY o.course_id, o.teacher_id"
 
         rows = self.db.query(sql, tuple(params))
 
-        # ④ 聚合输出保持原逻辑
+        # ④ 聚合输出保持原逻辑，但需要按 offering_id 去重
+        # 因为 LEFT JOIN offering_sessions 可能导致同一 offering_id 出现多次
+        from typing import Set, Tuple
         aggregated_courses: Dict[str, Dict] = {}
+        seen_offering_ids: Set[int] = set()  # 全局的 offering_id 集合，确保每个 offering 只处理一次
+        # 额外去重：按 (course_id, teacher_id, class_time) 去重，避免完全相同的课程显示多次
+        seen_course_teacher_time: Set[Tuple[str, str, str]] = set()
+        
         for row in rows:
             cid = row["course_id"]
-
+            offering_id = row["offering_id"]
+            
+            # 如果这个 offering_id 已经处理过，跳过（避免重复）
+            # 同一个 offering_id 应该只显示一次，即使有多个 offering_sessions 记录
+            if offering_id in seen_offering_ids:
+                continue
+            
+            teacher_id = row["teacher_id"]
             teacher_time_str = row.get("class_time") or ""
+            
+            # 额外去重：检查 (course_id, teacher_id, class_time) 组合是否已存在
+            # 如果存在，说明是完全相同的课程（相同老师、相同时间），跳过
+            course_teacher_time_key = (cid, str(teacher_id), teacher_time_str)
+            if course_teacher_time_key in seen_course_teacher_time:
+                continue
+            
+            # 标记为已处理
+            seen_offering_ids.add(offering_id)
+            seen_course_teacher_time.add(course_teacher_time_key)
+
             offering_detail = {
-                "offering_id": row["offering_id"],
-                "teacher_id": row["teacher_id"],
+                "offering_id": offering_id,
+                "teacher_id": teacher_id,
                 "teacher_name": row["teacher_name"],
                 "max_students": row["max_students"],
                 "current_students": row["current_students"],

@@ -14,6 +14,8 @@ from utils.logger import Logger
 from core.course_manager import CourseManager
 from core.enrollment_manager import EnrollmentManager
 from core.grade_manager import GradeManager
+from utils.qwen_client import QwenAdvisor
+import threading
 
 
 class StudentWindow:
@@ -47,7 +49,7 @@ class StudentWindow:
         self.root.title(f"北京邮电大学教学管理系统 - 学生端 - {user.name}")
         
         window_width = 1200
-        window_height = 700
+        window_height = 800  # 增加窗口高度，为建议显示区域提供更多空间
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
         x = (screen_width - window_width) // 2
@@ -155,6 +157,7 @@ class StudentWindow:
             ("📋 培养方案", self.show_curriculum),
             ("📊 我的成绩", self.show_my_grades),
             ("📅 我的课表", self.show_my_schedule),
+            ("🤖 学习建议", self.show_ai_advice),
             ("👤 个人信息", self.show_personal_info)
         ]
         
@@ -209,19 +212,177 @@ class StudentWindow:
         )
         title.pack(pady=20, anchor="w", padx=20)
         
-        # 获取选课记录
+        # 获取选课记录 - 只显示当前学期的已选课程（包括必修课程）
+        import os
+        from utils.logger import Logger
+        current_semester = os.getenv("CURRENT_SEMESTER", "2024-2025-2")
+        
         enrollments = self.enrollment_manager.get_student_enrollments(
             self.user.id, status='enrolled'
         )
         
+        # 调试信息：记录查询到的所有选课记录
+        Logger.debug(f"学生 {self.user.id} 查询到 {len(enrollments)} 条选课记录")
+        
+        # 如果查询结果为0，检查数据库中是否有该学生的任何记录
+        if len(enrollments) == 0:
+            try:
+                # 检查是否有任何状态的选课记录（直接查询数据库）
+                all_status_enrollments = self.db.execute_query(
+                    """
+                    SELECT e.enrollment_id, e.status, e.semester, co.course_id
+                    FROM enrollments e
+                    LEFT JOIN course_offerings co ON e.offering_id = co.offering_id
+                    WHERE e.student_id = ?
+                    LIMIT 10
+                    """,
+                    (self.user.id,)
+                )
+                Logger.debug(f"学生 {self.user.id} 所有状态的选课记录数: {len(all_status_enrollments)}")
+                
+                # 检查数据库中是否有该学生的记录
+                student_check = self.db.execute_query(
+                    "SELECT student_id, grade, major FROM students WHERE student_id=? LIMIT 1",
+                    (self.user.id,)
+                )
+                if student_check:
+                    Logger.debug(f"学生 {self.user.id} 存在于数据库中: {student_check[0]}")
+                else:
+                    Logger.warning(f"学生 {self.user.id} 不存在于数据库中！")
+                
+                # 检查是否有该学期的开课记录
+                offering_check = self.db.execute_query(
+                    "SELECT COUNT(*) as cnt FROM course_offerings WHERE semester=?",
+                    (current_semester,)
+                )
+                if offering_check:
+                    Logger.debug(f"学期 {current_semester} 的开课记录数: {offering_check[0].get('cnt', 0)}")
+            except Exception as e:
+                Logger.warning(f"诊断查询时出错: {e}")
+        
+        if enrollments:
+            semesters_found = set()
+            for e in enrollments:
+                sem = e.get('semester', '') or ''
+                if sem:
+                    semesters_found.add(sem)
+            Logger.debug(f"找到的学期: {semesters_found}, 当前查询学期: {current_semester}")
+        
+        # 过滤：只显示当前学期的所有课程
+        # 注意：包括所有已选课程，包括默认必修课程
+        # 使用字符串比较确保学期匹配（处理可能的格式差异）
+        # 如果enrollments中的semester为空，尝试从course_offerings获取
+        filtered_enrollments = []
+        for e in enrollments:
+            semester = e.get('semester', '').strip() if e.get('semester') else ''
+            # 如果semester为空，尝试从course_offerings获取（通过offering_id）
+            if not semester:
+                offering_id = e.get('offering_id')
+                if offering_id:
+                    offering_info = self.course_manager.get_offering_by_id(offering_id)
+                    if offering_info and offering_info.get('semester'):
+                        semester = offering_info['semester'].strip()
+                        # 更新enrollments记录中的semester字段
+                        e['semester'] = semester
+            
+            # 匹配当前学期
+            if semester and semester.strip() == current_semester.strip():
+                # 确保semester字段被设置（用于显示）
+                e['semester'] = semester
+                filtered_enrollments.append(e)
+        
+        enrollments = filtered_enrollments
+        
+        # 调试信息：记录过滤后的结果
+        Logger.debug(f"过滤后，当前学期 {current_semester} 的选课记录数: {len(enrollments)}")
+        
         if not enrollments:
-            no_data_label = ctk.CTkLabel(
-                self.content_frame,
-                text="暂无选课记录",
-                font=("Microsoft YaHei UI", 18),
-                text_color="#666666"
+            # 检查是否有其他学期的选课记录
+            all_enrollments = self.enrollment_manager.get_student_enrollments(
+                self.user.id, status='enrolled'
             )
-            no_data_label.pack(pady=50)
+            
+            # 收集所有学期信息
+            all_semesters = set()
+            for e in all_enrollments:
+                sem = e.get('semester', '').strip() if e.get('semester') else ''
+                if not sem:
+                    # 尝试从course_offerings获取
+                    offering_id = e.get('offering_id')
+                    if offering_id:
+                        offering_info = self.course_manager.get_offering_by_id(offering_id)
+                        if offering_info and offering_info.get('semester'):
+                            sem = offering_info['semester'].strip()
+                if sem:
+                    all_semesters.add(sem)
+            
+            # 显示提示信息
+            info_frame = ctk.CTkFrame(self.content_frame, fg_color="#F0F8FF", corner_radius=10)
+            info_frame.pack(fill="x", padx=20, pady=20)
+            
+            if not all_enrollments:
+                # 完全没有选课记录
+                no_data_label = ctk.CTkLabel(
+                    info_frame,
+                    text="暂无选课记录\n\n提示：如果这是首次使用，请先运行数据生成脚本生成选课数据\n\n"
+                         f"当前学期：{current_semester}",
+                    font=("Microsoft YaHei UI", 16),
+                    text_color="#666666",
+                    justify="center"
+                )
+                no_data_label.pack(pady=30, padx=20)
+            else:
+                # 有其他学期的选课记录
+                sem_list = sorted(list(all_semesters)) if all_semesters else ["未知"]
+                
+                # 解析学生年级信息，提供更准确的提示
+                student_grade = None
+                try:
+                    student_info = self.db.execute_query(
+                        "SELECT grade FROM students WHERE student_id=? LIMIT 1",
+                        (self.user.id,)
+                    )
+                    if student_info:
+                        student_grade = student_info[0].get('grade')
+                except:
+                    pass
+                
+                # 计算学生在当前学期应该是大几
+                if student_grade:
+                    try:
+                        current_year = int(current_semester.split("-")[0])
+                        academic_year = current_year - int(student_grade) + 1
+                        if academic_year < 1:
+                            academic_year = 1
+                        elif academic_year > 4:
+                            academic_year = 4
+                        grade_text = f"大{['一', '二', '三', '四'][academic_year-1]}"
+                    except:
+                        grade_text = ""
+                else:
+                    grade_text = ""
+                
+                hint_text = f"当前学期（{current_semester}）暂无选课记录"
+                if grade_text:
+                    hint_text += f"\n\n您当前应该是{grade_text}学生，应该有对应的必修课程"
+                hint_text += f"\n\n您在其他学期有 {len(all_enrollments)} 条选课记录\n"
+                hint_text += f"学期：{', '.join(sem_list)}\n\n"
+                hint_text += f"⚠️ 重要提示：\n"
+                hint_text += f"1. 数据生成会为所有8个学期生成数据（从2022-2023-1到2025-2026-2）\n"
+                hint_text += f"2. base_semester参数仅用于确定起始年份，查询时可以使用任意学期\n"
+                hint_text += f"3. 生成数据命令示例：python -m utils.data_simulator all 300 50 bupt_teaching.db 2025-2026-2\n"
+                hint_text += f"4. 运行程序命令：python main.py {current_semester}\n"
+                hint_text += f"5. 如果数据已生成但查询不到，可能是该学期的选课数据生成失败，请检查日志"
+                
+                no_data_label = ctk.CTkLabel(
+                    info_frame,
+                    text=hint_text,
+                    font=("Microsoft YaHei UI", 14),
+                    text_color="#666666",
+                    justify="center"
+                )
+                no_data_label.pack(pady=30, padx=20)
+            
             return
         
         # 创建表格框架
@@ -246,7 +407,7 @@ class StudentWindow:
         
         tree = ttk.Treeview(
             table_frame,
-            columns=("course_id", "course_name", "credits", "teacher", "time", "classroom", "action"),
+            columns=("course_id", "course_name", "credits", "semester", "teacher", "time", "classroom", "action"),
             show="headings",
             height=15
         )
@@ -255,6 +416,7 @@ class StudentWindow:
         tree.heading("course_id", text="课程代码")
         tree.heading("course_name", text="课程名称")
         tree.heading("credits", text="学分")
+        tree.heading("semester", text="学期")
         tree.heading("teacher", text="授课教师")
         tree.heading("time", text="上课时间")
         tree.heading("classroom", text="教室")
@@ -262,10 +424,11 @@ class StudentWindow:
         
         # 列宽
         tree.column("course_id", width=100)
-        tree.column("course_name", width=220)
+        tree.column("course_name", width=200)
         tree.column("credits", width=80)
+        tree.column("semester", width=120)
         tree.column("teacher", width=100)
-        tree.column("time", width=200)
+        tree.column("time", width=180)
         tree.column("classroom", width=120)
         tree.column("action", width=100)
         
@@ -275,6 +438,7 @@ class StudentWindow:
                 enrollment['course_id'],
                 enrollment['course_name'],
                 f"{enrollment['credits']}学分",
+                enrollment.get('semester', ''),
                 enrollment['teacher_name'],
                 enrollment['class_time'] or '',
                 enrollment['classroom'] or '',
@@ -397,8 +561,10 @@ class StudentWindow:
         )
         refresh_button.pack(side="left", padx=10)
         
-        # 获取可选课程
-        current_semester = "2024-2025-2" 
+        # 获取可选课程 - 从环境变量或配置中读取当前学期
+        # 如果生成数据时指定了学期（如 2024-2025-2），GUI应该只显示该学期的课程
+        import os
+        current_semester = os.getenv("CURRENT_SEMESTER", "2024-2025-2")
         
         # 传入学期和当前用户的ID
         courses = self.course_manager.get_available_courses(
@@ -461,10 +627,24 @@ class StudentWindow:
         tree.column("students", width=100)
         tree.column("action", width=80)
         
-        # --- 修复核心逻辑：双重循环遍历 offerings ---
+        # --- 修复核心逻辑：双重循环遍历 offerings，并去除重复课程 ---
+        # 使用集合记录已显示的课程（课程名称、老师、上课时间）
+        seen_courses = set()
+        
         for course in courses:
             # 遍历该课程下的所有开课班级
             for offering in course.get('offerings', []):
+                # 构建唯一标识：课程名称 + 老师 + 上课时间
+                course_name = course.get('course_name', '')
+                teacher_name = offering.get('teacher_name', '未知')
+                class_time = offering.get('class_time', '')
+                unique_key = (course_name, teacher_name, class_time)
+                
+                # 如果已经显示过相同的课程（相同名称、老师、时间），跳过
+                if unique_key in seen_courses:
+                    continue
+                
+                seen_courses.add(unique_key)
                 tree.insert("", "end", values=(
                     course.get('course_id', ''),
                     course.get('course_name', ''),
@@ -533,16 +713,29 @@ class StudentWindow:
             self.course_selection_tree.delete(item)
         
         # 获取所有可选课程 (修复：补全参数)
-        current_semester = "2024-2025-2"  # 建议最好定义在类常量或配置文件中
+        import os
+        current_semester = os.getenv("CURRENT_SEMESTER", "2024-2025-2")
         all_courses = self.course_manager.get_available_courses(current_semester, self.user.id)
         
         keyword_lower = keyword.strip().lower() if keyword else ""
         found_any = False
+        # 使用集合记录已显示的课程（课程名称、老师、上课时间），避免重复
+        seen_courses = set()
 
         # 遍历课程
         for course in all_courses:
             # 遍历该课程下的所有开课班级（offering）
             for offering in course.get('offerings', []):
+                # 构建唯一标识：课程名称 + 老师 + 上课时间
+                course_name = course.get('course_name', '')
+                teacher_name = offering.get('teacher_name', '未知')
+                class_time = offering.get('class_time', '')
+                unique_key = (course_name, teacher_name, class_time)
+                
+                # 如果已经显示过相同的课程（相同名称、老师、时间），跳过
+                if unique_key in seen_courses:
+                    continue
+                
                 # 获取匹配所需的字段
                 c_name = course.get('course_name', '').lower()
                 c_id = course.get('course_id', '').lower()
@@ -554,6 +747,7 @@ class StudentWindow:
                                            keyword_lower in t_name):
                     
                     found_any = True
+                    seen_courses.add(unique_key)
                     self.course_selection_tree.insert("", "end", values=(
                         course.get('course_id', ''),
                         course.get('course_name', ''),
@@ -587,8 +781,47 @@ class StudentWindow:
         )
         title.pack(pady=20, anchor="w", padx=20)
         
+        # 获取当前学期
+        import os
+        current_semester = os.getenv("CURRENT_SEMESTER", "2024-2025-2")
+        
         # 获取成绩
-        grades = self.grade_manager.get_student_grades(self.user.id)
+        all_grades = self.grade_manager.get_student_grades(self.user.id)
+        
+        # 过滤成绩：只显示当前学期及之前的成绩
+        def semester_before_or_equal(semester1: str, semester2: str) -> bool:
+            """
+            判断 semester1 是否在 semester2 之前或等于 semester2
+            学期格式：YYYY-YYYY-N（N=1为秋季，N=2为春季）
+            """
+            if not semester1 or not semester2:
+                return False
+            
+            try:
+                parts1 = semester1.split("-")
+                parts2 = semester2.split("-")
+                
+                if len(parts1) < 3 or len(parts2) < 3:
+                    return False
+                
+                year1 = int(parts1[0])
+                term1 = int(parts1[2])
+                year2 = int(parts2[0])
+                term2 = int(parts2[2])
+                
+                # 先比较年份
+                if year1 < year2:
+                    return True
+                elif year1 > year2:
+                    return False
+                else:
+                    # 年份相同，比较学期（1=秋，2=春）
+                    return term1 <= term2
+            except Exception:
+                return False
+        
+        # 过滤成绩
+        grades = [g for g in all_grades if semester_before_or_equal(g.get('semester', ''), current_semester)]
         
         if not grades:
             no_data_label = ctk.CTkLabel(
@@ -636,11 +869,12 @@ class StudentWindow:
         
         tree = ttk.Treeview(
             table_frame,
-            columns=("course_id", "course_name", "credits", "score", "grade", "gpa", "teacher"),
+            columns=("semester", "course_id", "course_name", "credits", "score", "grade", "gpa", "teacher"),
             show="headings",
             height=12
         )
         
+        tree.heading("semester", text="学期")
         tree.heading("course_id", text="课程代码")
         tree.heading("course_name", text="课程名称")
         tree.heading("credits", text="学分")
@@ -649,6 +883,7 @@ class StudentWindow:
         tree.heading("gpa", text="绩点")
         tree.heading("teacher", text="教师")
         
+        tree.column("semester", width=120)
         tree.column("course_id", width=100)
         tree.column("course_name", width=200)
         tree.column("credits", width=80)
@@ -657,8 +892,22 @@ class StudentWindow:
         tree.column("gpa", width=80)
         tree.column("teacher", width=100)
         
+        # 获取学生入学年份，用于计算年级
+        student_grade = self.user.extra_info.get('grade') or getattr(self.user, 'grade', None)
+        if not student_grade:
+            # 从数据库查询
+            sql = "SELECT grade FROM students WHERE student_id = ?"
+            result = self.db.execute_query(sql, (self.user.id,))
+            if result:
+                student_grade = result[0].get('grade')
+        
         for grade in grades:
+            # 格式化学期显示
+            semester_str = grade.get('semester', '')
+            semester_display = self._format_semester_display(semester_str, student_grade)
+            
             tree.insert("", "end", values=(
+                semester_display,
                 grade['course_id'],
                 grade['course_name'],
                 grade['credits'],
@@ -690,10 +939,29 @@ class StudentWindow:
         )
         title.pack(pady=20, anchor="w", padx=20)
         
-        # 获取选课记录
+        # 学期选择 - 从环境变量或配置中读取当前学期
+        import os
+        current_semester = os.getenv("CURRENT_SEMESTER", "2024-2025-2")
+        semester_label = ctk.CTkLabel(
+            self.content_frame,
+            text=f"当前查看学期: {current_semester}（课表显示该学期的已选课程）",
+            font=("Microsoft YaHei UI", 14),
+            text_color="#666666"
+        )
+        semester_label.pack(pady=(0, 15), anchor="w", padx=20)
+        
+        # 获取选课记录（显示当前学期的所有已选课程，包括必修课程）
         enrollments = self.enrollment_manager.get_student_enrollments(
             self.user.id, status='enrolled'
         )
+        
+        # 过滤：只显示当前学期的课程，并过滤掉没有排课的课程
+        # 注意：包括所有已选课程，包括默认必修课程
+        enrollments = [
+            e for e in enrollments 
+            if e.get('semester') == current_semester
+            and e.get('class_time') and e.get('class_time') != '未排课'
+        ]
         
         if not enrollments:
             # 没有选课记录
@@ -740,10 +1008,10 @@ class StudentWindow:
         """
         schedule_data = {}
         
-        # 初始化5天，每天12节课
+        # 初始化5天，每天14节课（包括晚上12-14节）
         for day in range(1, 6):
             schedule_data[day] = {}
-            for period in range(1, 13):
+            for period in range(1, 15):  # 1-14节
                 schedule_data[day][str(period)] = []
         
         for enrollment in enrollments:
@@ -778,8 +1046,8 @@ class StudentWindow:
                     start_period = int(match.group(2))
                     end_period = int(match.group(3))
                     
-                    # 确保节次在合理范围内（1-12节）
-                    if start_period < 1 or end_period > 12 or start_period > end_period:
+                    # 确保节次在合理范围内（1-14节，支持晚上课程）
+                    if start_period < 1 or end_period > 14 or start_period > end_period:
                         continue
                     
                     # 转换星期（支持中文和数字）
@@ -799,9 +1067,9 @@ class StudentWindow:
     
     def _create_schedule_table(self, parent_frame, schedule_data):
         """创建课表表格（优化性能版本）"""
-        # 定义12个单节次：上午5节（1-5），下午7节（6-12）
-        periods = [str(i) for i in range(1, 13)]
-        period_names = [f"第{i}节" for i in range(1, 13)]
+        # 定义14个单节次：上午5节（1-5），下午6节（6-11），晚上3节（12-14）
+        periods = [str(i) for i in range(1, 15)]
+        period_names = [f"第{i}节" for i in range(1, 15)]
         weekdays = ['周一', '周二', '周三', '周四', '周五']
         
         # 外层容器
@@ -887,14 +1155,19 @@ class StudentWindow:
         scrollbar.pack(side="right", fill="y")
         canvas.configure(yscrollcommand=scrollbar.set)
         
-        # 创建12行（每行代表一节课）
+        # 创建14行（每行代表一节课）
         cell_height = 65  # 增加高度以容纳更大的文字
         for i, (period, period_name) in enumerate(zip(periods, period_names)):
             row_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
             row_frame.pack(fill="x", padx=5, pady=2)
             
-            # 时间段标签（左侧）- 优化样式
-            period_label_bg = "#E8E8E8" if i < 5 else "#D8E8F0"
+            # 时间段标签（左侧）- 优化样式：上午、下午、晚上不同颜色
+            if i < 5:
+                period_label_bg = "#E8E8E8"  # 上午：浅灰
+            elif i < 11:
+                period_label_bg = "#D8E8F0"  # 下午：浅蓝
+            else:
+                period_label_bg = "#F0E8D8"  # 晚上：浅黄
             
             period_label = ctk.CTkLabel(
                 row_frame,
@@ -969,7 +1242,7 @@ class StudentWindow:
     
     def show_personal_info(self):
         """显示个人信息"""
-        self.set_active_menu(5)
+        self.set_active_menu(6)  # 更新索引
         self.clear_content()
         
         title = ctk.CTkLabel(
@@ -1042,6 +1315,7 @@ class StudentWindow:
             return
         
         # 查询培养方案
+        # 排序：年级 -> 学期（秋季在春季之前）-> 类型（必修优先）-> 课程代码
         sql = """
             SELECT cm.grade, cm.term, cm.course_id, c.course_name, 
                    c.credits, cm.category
@@ -1049,7 +1323,10 @@ class StudentWindow:
             JOIN majors m ON cm.major_id = m.major_id
             JOIN courses c ON cm.course_id = c.course_id
             WHERE m.name = ?
-            ORDER BY cm.grade, cm.term, cm.category DESC, cm.course_id
+            ORDER BY cm.grade, 
+                     CASE WHEN cm.term = '秋' THEN 0 ELSE 1 END,
+                     cm.category DESC, 
+                     cm.course_id
         """
         
         curriculum_data = self.db.execute_query(sql, (major_name,))
@@ -1121,7 +1398,7 @@ class StudentWindow:
             category = record['category']
             
             # 学期名称
-            term_cn = "秋季" if term == "fall" else "春季"
+            term_cn = "秋季" if term == "秋" else "春季"
             grade_cn = {1: "一", 2: "二", 3: "三", 4: "四"}.get(grade, str(grade))
             semester_text = f"大{grade_cn}（{term_cn}）"
             
@@ -1143,6 +1420,696 @@ class StudentWindow:
         scrollbar.pack(side="right", fill="y")
         
         Logger.info(f"学生查看培养方案: {self.user.name} ({major_name})")
+    
+    def show_ai_advice(self):
+        """显示AI学习建议"""
+        self.set_active_menu(5)  # 更新索引，因为添加了新菜单项
+        self.clear_content()
+        
+        # 标题区域 - 更美观的设计
+        title_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        title_frame.pack(fill="x", padx=20, pady=(20, 10))
+        
+        title = ctk.CTkLabel(
+            title_frame,
+            text="🤖 AI智能学习建议",
+            font=("Microsoft YaHei UI", 28, "bold"),
+            text_color=self.BUPT_BLUE
+        )
+        title.pack(side="left")
+        
+        # 说明文字 - 更精美的卡片样式
+        desc_frame = ctk.CTkFrame(
+            self.content_frame, 
+            fg_color="#E8F4F8", 
+            corner_radius=12,
+            border_width=1,
+            border_color=self.BUPT_LIGHT_BLUE
+        )
+        desc_frame.pack(fill="x", padx=20, pady=10)
+        
+        desc_label = ctk.CTkLabel(
+            desc_frame,
+            text="💡 基于您的专业背景、已选课程和行业趋势，AI将为您提供个性化的学习建议和职业规划指导",
+            font=("Microsoft YaHei UI", 15),
+            text_color="#2C3E50",
+            wraplength=1000,
+            justify="left"
+        )
+        desc_label.pack(pady=18, padx=25)
+        
+        # 按钮区域 - 更美观的布局
+        button_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        button_frame.pack(fill="x", padx=20, pady=(10, 15))
+        
+        # 生成建议按钮 - 更大更醒目
+        generate_button = ctk.CTkButton(
+            button_frame,
+            text="✨ 生成学习建议",
+            width=220,
+            height=55,
+            font=("Microsoft YaHei UI", 19, "bold"),
+            fg_color=self.BUPT_BLUE,
+            hover_color=self.BUPT_LIGHT_BLUE,
+            corner_radius=12,
+            command=self._generate_advice
+        )
+        generate_button.pack(side="left", padx=(0, 15))
+        
+        # 刷新数据按钮
+        refresh_button = ctk.CTkButton(
+            button_frame,
+            text="🔄 刷新数据",
+            width=160,
+            height=55,
+            font=("Microsoft YaHei UI", 17),
+            fg_color=self.BUPT_LIGHT_BLUE,
+            hover_color=self.BUPT_BLUE,
+            corner_radius=12,
+            command=self.show_ai_advice
+        )
+        refresh_button.pack(side="left", padx=5)
+        
+        # 显示当前选课信息预览
+        self._show_course_preview()
+    
+    def _show_course_preview(self):
+        """显示当前已选课程预览 - 美观的卡片式布局"""
+        enrollments = self.enrollment_manager.get_student_enrollments(
+            self.user.id, status='enrolled'
+        )
+        
+        preview_frame = ctk.CTkFrame(
+            self.content_frame, 
+            fg_color="#F8F9FA", 
+            corner_radius=15,
+            border_width=2,
+            border_color="#D0E8F0"
+        )
+        preview_frame.pack(fill="x", padx=20, pady=(0, 20))
+        
+        # 标题区域
+        title_frame = ctk.CTkFrame(preview_frame, fg_color="transparent")
+        title_frame.pack(fill="x", padx=25, pady=(20, 15))
+        
+        preview_title = ctk.CTkLabel(
+            title_frame,
+            text="📋 当前已选课程预览",
+            font=("Microsoft YaHei UI", 20, "bold"),
+            text_color=self.BUPT_BLUE
+        )
+        preview_title.pack(side="left")
+        
+        if not enrollments:
+            no_course_label = ctk.CTkLabel(
+                preview_frame,
+                text="暂无已选课程，建议先进行选课后再生成学习建议",
+                font=("Microsoft YaHei UI", 15),
+                text_color="#666666"
+            )
+            no_course_label.pack(pady=20, padx=25, anchor="w")
+        else:
+            total_credits = sum(e['credits'] for e in enrollments)
+            
+            # 统计信息卡片
+            stats_frame = ctk.CTkFrame(
+                preview_frame,
+                fg_color="#E3F2FD",
+                corner_radius=10,
+                border_width=1,
+                border_color="#90CAF9"
+            )
+            stats_frame.pack(fill="x", padx=25, pady=(0, 15))
+            
+            stats_inner = ctk.CTkFrame(stats_frame, fg_color="transparent")
+            stats_inner.pack(pady=12, padx=15)
+            
+            course_count_label = ctk.CTkLabel(
+                stats_inner,
+                text=f"📚 {len(enrollments)} 门课程",
+                font=("Microsoft YaHei UI", 16, "bold"),
+                text_color="#1976D2"
+            )
+            course_count_label.pack(side="left", padx=(0, 30))
+            
+            credits_label = ctk.CTkLabel(
+                stats_inner,
+                text=f"⭐ {total_credits} 学分",
+                font=("Microsoft YaHei UI", 16, "bold"),
+                text_color="#1976D2"
+            )
+            credits_label.pack(side="left")
+            
+            # 课程列表 - 使用滚动框架
+            courses_container = ctk.CTkScrollableFrame(
+                preview_frame,
+                fg_color="transparent",
+                corner_radius=0
+            )
+            courses_container.pack(fill="both", expand=True, padx=25, pady=(0, 20))
+            
+            # 显示所有课程（最多显示8门，超过的显示提示）
+            display_count = min(8, len(enrollments))
+            for i, enrollment in enumerate(enrollments[:display_count]):
+                # 每个课程一个卡片
+                course_card = ctk.CTkFrame(
+                    courses_container,
+                    fg_color="white",
+                    corner_radius=10,
+                    border_width=1,
+                    border_color="#E0E0E0"
+                )
+                course_card.pack(fill="x", pady=6, padx=5)
+                
+                # 课程信息布局
+                card_content = ctk.CTkFrame(course_card, fg_color="transparent")
+                card_content.pack(fill="x", padx=15, pady=12)
+                
+                # 课程名称和代码
+                course_name_label = ctk.CTkLabel(
+                    card_content,
+                    text=f"📖 {enrollment['course_name']}",
+                    font=("Microsoft YaHei UI", 15, "bold"),
+                    text_color="#2C3E50",
+                    anchor="w"
+                )
+                course_name_label.pack(side="left", padx=(0, 15))
+                
+                # 课程代码
+                course_id_label = ctk.CTkLabel(
+                    card_content,
+                    text=f"({enrollment['course_id']})",
+                    font=("Microsoft YaHei UI", 13),
+                    text_color="#7F8C8D",
+                    anchor="w"
+                )
+                course_id_label.pack(side="left", padx=(0, 15))
+                
+                # 学分标签
+                credits_badge = ctk.CTkFrame(
+                    card_content,
+                    fg_color=self.BUPT_LIGHT_BLUE,
+                    corner_radius=12,
+                    width=60,
+                    height=24
+                )
+                credits_badge.pack(side="right")
+                credits_badge.pack_propagate(False)
+                
+                credits_text = ctk.CTkLabel(
+                    credits_badge,
+                    text=f"{enrollment['credits']}学分",
+                    font=("Microsoft YaHei UI", 12, "bold"),
+                    text_color="white"
+                )
+                credits_text.pack(expand=True)
+            
+            # 如果还有更多课程
+            if len(enrollments) > display_count:
+                more_label = ctk.CTkLabel(
+                    courses_container,
+                    text=f"... 还有 {len(enrollments) - display_count} 门课程未显示",
+                    font=("Microsoft YaHei UI", 13),
+                    text_color="#95A5A6",
+                    anchor="center"
+                )
+                more_label.pack(pady=10)
+    
+    def _generate_advice(self):
+        """生成学习建议 - 打开新窗口显示"""
+        # 检查API密钥
+        try:
+            advisor = QwenAdvisor()
+        except RuntimeError as e:
+            messagebox.showerror("错误", f"无法初始化AI服务：{str(e)}\n\n请设置环境变量 DASH_SCOPE_API_KEY")
+            return
+        
+        # 打开新窗口显示建议
+        self._open_advice_window()
+    
+    def _open_advice_window(self):
+        """打开AI建议显示窗口"""
+        # 创建新窗口
+        advice_window = ctk.CTkToplevel(self.root)
+        advice_window.title(f"AI学习建议 - {self.user.name}")
+        advice_window.geometry("1000x700")
+        
+        # 设置窗口图标和样式
+        advice_window.transient(self.root)  # 设置为父窗口的子窗口
+        advice_window.grab_set()  # 模态窗口
+        
+        # 主容器
+        main_frame = ctk.CTkFrame(advice_window, fg_color="white")
+        main_frame.pack(fill="both", expand=True)
+        
+        # 顶部标题栏
+        header_frame = ctk.CTkFrame(
+            main_frame,
+            fg_color=self.BUPT_BLUE,
+            height=80,
+            corner_radius=0
+        )
+        header_frame.pack(fill="x", side="top")
+        header_frame.pack_propagate(False)
+        
+        title_label = ctk.CTkLabel(
+            header_frame,
+            text="🤖 AI智能学习建议",
+            font=("Microsoft YaHei UI", 24, "bold"),
+            text_color="white"
+        )
+        title_label.pack(side="left", padx=30, pady=25)
+        
+        close_button = ctk.CTkButton(
+            header_frame,
+            text="✕",
+            width=40,
+            height=40,
+            font=("Microsoft YaHei UI", 18, "bold"),
+            fg_color="transparent",
+            hover_color="#E74C3C",
+            text_color="white",
+            command=advice_window.destroy
+        )
+        close_button.pack(side="right", padx=20, pady=20)
+        
+        # 内容区域
+        content_frame = ctk.CTkFrame(main_frame, fg_color="#FAFAFA")
+        content_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # 状态提示区域
+        status_frame = ctk.CTkFrame(
+            content_frame,
+            fg_color="#FFF9E6",
+            corner_radius=12,
+            border_width=2,
+            border_color="#FFD700"
+        )
+        status_frame.pack(fill="x", pady=(0, 15))
+        
+        status_label = ctk.CTkLabel(
+            status_frame,
+            text="⏳ 正在生成学习建议，请稍候...",
+            font=("Microsoft YaHei UI", 18, "bold"),
+            text_color="#D68910"
+        )
+        status_label.pack(pady=15, padx=25)
+        
+        # 建议显示区域
+        result_frame = ctk.CTkFrame(
+            content_frame,
+            corner_radius=15,
+            border_width=2,
+            border_color="#E0E0E0",
+            fg_color="white"
+        )
+        result_frame.pack(fill="both", expand=True, pady=(0, 15))
+        
+        # 文本显示框
+        advice_textbox = ctk.CTkTextbox(
+            result_frame,
+            font=("Microsoft YaHei UI", 16),
+            wrap="word",
+            corner_radius=12,
+            fg_color="white",
+            text_color="#2C3E50",
+            border_width=1,
+            border_color="#E0E0E0"
+        )
+        advice_textbox.pack(fill="both", expand=True, padx=20, pady=20)
+        advice_textbox.insert("1.0", "正在生成建议，请稍候...")
+        advice_textbox.configure(state="disabled")
+        
+        # 底部按钮区域
+        button_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        button_frame.pack(fill="x", pady=(0, 10))
+        
+        copy_button = ctk.CTkButton(
+            button_frame,
+            text="📋 复制建议",
+            width=180,
+            height=45,
+            font=("Microsoft YaHei UI", 16, "bold"),
+            fg_color=self.BUPT_LIGHT_BLUE,
+            hover_color=self.BUPT_BLUE,
+            corner_radius=12,
+            command=lambda: self._copy_text_to_clipboard(advice_textbox, advice_window)
+        )
+        copy_button.pack(side="left", padx=(0, 15))
+        
+        # 在新线程中调用API
+        def update_ui(advice, error):
+            """更新UI的回调函数"""
+            if error:
+                status_frame.configure(fg_color="#FFEBEE", border_color="#E57373")
+                status_label.configure(
+                    text=f"❌ {error}",
+                    text_color="#C62828"
+                )
+                advice_textbox.configure(state="normal")
+                advice_textbox.delete("1.0", "end")
+                error_text = f"生成建议时出现错误：\n\n{error}\n\n请检查：\n1. 是否设置了 DASH_SCOPE_API_KEY 环境变量\n2. API密钥是否有效\n3. 网络连接是否正常"
+                advice_textbox.insert("1.0", error_text)
+                advice_textbox.configure(state="disabled", text_color="#C62828")
+            elif advice:
+                status_frame.configure(fg_color="#E8F5E9", border_color="#81C784")
+                status_label.configure(
+                    text="✅ 建议生成完成",
+                    text_color="#2E7D32"
+                )
+                advice_textbox.configure(state="normal")
+                advice_textbox.delete("1.0", "end")
+                advice_textbox.insert("1.0", advice)
+                advice_textbox.configure(state="disabled", text_color="#2C3E50")
+        
+        # 在新线程中调用API
+        thread = threading.Thread(
+            target=self._call_qwen_api_for_window,
+            args=(advice_window, update_ui),
+            daemon=True
+        )
+        thread.start()
+    
+    def _call_qwen_api_for_window(self, window, update_callback):
+        """为新窗口调用Qwen API"""
+        try:
+            import os
+            current_semester = os.getenv("CURRENT_SEMESTER", "2024-2025-2")
+            
+            # 获取学生信息
+            student_info = self._get_student_info()
+            
+            # 获取所有学期的选课记录
+            all_enrollments = self.enrollment_manager.get_student_enrollments(
+                self.user.id, status='enrolled'
+            )
+            
+            # 获取所有学期的成绩
+            all_grades = self.grade_manager.get_student_grades(self.user.id)
+            
+            # 分离以往学期、当前学期和下个学期的数据
+            past_semester_courses = []
+            current_semester_courses = []
+            past_semester_grades = []
+            
+            # 解析当前学期，计算下个学期
+            sem_parts = current_semester.split("-")
+            current_year = int(sem_parts[0])
+            current_term = int(sem_parts[-1])  # 1=秋, 2=春
+            
+            # 计算下个学期
+            if current_term == 1:
+                next_semester = f"{current_year}-{current_year+1}-2"  # 春季
+            else:
+                next_semester = f"{current_year+1}-{current_year+2}-1"  # 秋季
+            
+            # 分类课程和成绩
+            for e in all_enrollments:
+                semester = e.get('semester', '')
+                course_data = {
+                    'course_name': e.get('course_name', ''),
+                    'course_id': e.get('course_id', ''),
+                    'credits': e.get('credits', 0),
+                    'teacher_name': e.get('teacher_name', ''),
+                    'course_type': e.get('course_type', ''),
+                    'semester': semester
+                }
+                
+                if semester < current_semester:
+                    past_semester_courses.append(course_data)
+                elif semester == current_semester:
+                    current_semester_courses.append(course_data)
+            
+            # 获取以往学期的成绩（所有有成绩的历史课程）
+            # 将成绩与课程关联，确保每个历史课程都有对应的成绩信息
+            grades_by_course_semester = {}
+            for grade in all_grades:
+                semester = grade.get('semester', '')
+                course_id = grade.get('course_id', '')
+                if semester < current_semester:
+                    key = (course_id, semester)
+                    grades_by_course_semester[key] = {
+                        'course_name': grade.get('course_name', ''),
+                        'course_id': course_id,
+                        'score': grade.get('score', 0),
+                        'gpa': grade.get('gpa', 0),
+                        'grade_level': grade.get('grade_level', ''),
+                        'semester': semester
+                    }
+            
+            # 将历史课程与成绩合并
+            # 对于有成绩的课程，添加成绩信息；对于没有成绩的课程，也保留（可能是刚选课还没成绩）
+            # 确保所有有成绩的历史课程都在past_semester_grades中
+            for course in past_semester_courses:
+                key = (course['course_id'], course['semester'])
+                if key in grades_by_course_semester:
+                    # 有成绩，添加到成绩列表
+                    past_semester_grades.append(grades_by_course_semester[key])
+            
+            # 确保所有有成绩的历史课程都在past_semester_grades中
+            # past_semester_courses包含所有历史课程（无论是否有成绩）
+            
+            # 获取下个学期的推荐课程（从培养方案中获取）
+            next_semester_courses = self._get_next_semester_courses(student_info, next_semester)
+            
+            # 调用API
+            advisor = QwenAdvisor()
+            advice = advisor.advise(
+                student_info, 
+                current_semester_courses,
+                past_semester_courses=past_semester_courses,
+                past_semester_grades=past_semester_grades,
+                next_semester_courses=next_semester_courses
+            )
+            
+            # 更新UI（需要在主线程中执行）
+            window.after(0, update_callback, advice, None)
+            
+        except Exception as e:
+            error_msg = f"生成建议失败：{str(e)}"
+            Logger.error(error_msg, exc_info=True)
+            window.after(0, update_callback, None, error_msg)
+    
+    def _get_next_semester_courses(self, student_info: dict, next_semester: str) -> list:
+        """获取下个学期的推荐课程（从培养方案中获取）"""
+        try:
+            # 获取学生的专业ID
+            sql = "SELECT major_id, grade FROM students WHERE student_id = ?"
+            result = self.db.execute_query(sql, (self.user.id,))
+            if not result:
+                return []
+            
+            major_id = result[0].get('major_id')
+            grade = result[0].get('grade', 1)
+            
+            if not major_id:
+                return []
+            
+            # 计算下个学期的年级和学期（秋/春）
+            sem_parts = next_semester.split("-")
+            next_year = int(sem_parts[0])
+            next_term = int(sem_parts[-1])  # 1=秋, 2=春
+            
+            # 计算下个学期的年级（简化计算，假设每学年2个学期）
+            # 这里需要根据实际情况调整
+            academic_year = grade  # 当前年级
+            if next_term == 1:  # 秋季学期，年级不变
+                next_grade = academic_year
+            else:  # 春季学期，年级不变（同一学年）
+                next_grade = academic_year
+            
+            # 从curriculum_matrix获取下个学期的课程
+            term_str = '秋' if next_term == 1 else '春'
+            sql = """
+                SELECT DISTINCT cm.course_id, c.course_name, c.credits, c.course_type
+                FROM curriculum_matrix cm
+                JOIN courses c ON cm.course_id = c.course_id
+                WHERE cm.major_id = ? 
+                AND cm.grade = ?
+                AND cm.term = ?
+            """
+            result = self.db.execute_query(sql, (major_id, next_grade, term_str))
+            
+            next_courses = []
+            for row in result:
+                next_courses.append({
+                    'course_name': row.get('course_name', ''),
+                    'course_id': row.get('course_id', ''),
+                    'credits': row.get('credits', 0),
+                    'course_type': row.get('course_type', ''),
+                    'semester': next_semester
+                })
+            
+            return next_courses
+            
+        except Exception as e:
+            Logger.warning(f"获取下个学期课程失败: {e}")
+            return []
+    
+    def _format_semester_display(self, semester: str, student_grade: int = None) -> str:
+        """
+        将学期字符串格式化为"大一（春）"这样的格式
+        
+        Args:
+            semester: 学期字符串，如 "2024-2025-2"
+            student_grade: 学生入学年份，如 2024
+        
+        Returns:
+            格式化后的学期字符串，如 "大一（春）"
+        """
+        if not semester:
+            return ""
+        
+        try:
+            # 解析学期字符串，如 "2024-2025-2"
+            parts = semester.split("-")
+            if len(parts) < 3:
+                return semester
+            
+            start_year = int(parts[0])
+            term_num = int(parts[-1])  # 1=秋, 2=春
+            
+            # 如果没有提供学生入学年份，尝试从user对象获取
+            if not student_grade:
+                student_grade = self.user.extra_info.get('grade') or getattr(self.user, 'grade', None)
+            
+            # 计算年级
+            if student_grade:
+                grade_level = start_year - student_grade + 1
+                if grade_level < 1:
+                    grade_level = 1
+                elif grade_level > 4:
+                    grade_level = 4
+            else:
+                # 如果无法确定入学年份，使用学期年份推断（假设是2024级）
+                grade_level = start_year - 2024 + 1
+                if grade_level < 1:
+                    grade_level = 1
+                elif grade_level > 4:
+                    grade_level = 4
+            
+            # 年级中文映射
+            grade_map = {1: "一", 2: "二", 3: "三", 4: "四"}
+            grade_cn = grade_map.get(grade_level, "一")
+            
+            # 学期中文
+            term_cn = "秋" if term_num == 1 else "春"
+            
+            return f"大{grade_cn}（{term_cn}）"
+        except Exception:
+            # 如果解析失败，返回原始字符串
+            return semester
+    
+    def _copy_text_to_clipboard(self, textbox, window):
+        """复制文本到剪贴板"""
+        try:
+            text = textbox.get("1.0", "end-1c")
+            if text and text.strip():
+                window.clipboard_clear()
+                window.clipboard_append(text)
+                messagebox.showinfo("成功", "建议已复制到剪贴板", parent=window)
+            else:
+                messagebox.showwarning("提示", "没有可复制的内容", parent=window)
+        except Exception as e:
+            messagebox.showerror("错误", f"复制失败：{str(e)}", parent=window)
+    
+    def _get_student_info(self) -> dict:
+        """获取学生信息"""
+        # 查询学院名称
+        college_name = ""
+        if hasattr(self.user, 'college_code') and self.user.college_code:
+            sql = "SELECT name FROM colleges WHERE college_code = ?"
+            result = self.db.execute_query(sql, (self.user.college_code,))
+            if result:
+                college_name = result[0].get('name', '')
+        
+        # 如果没有从user对象获取，尝试从数据库查询
+        if not college_name:
+            sql = """
+                SELECT s.major, s.grade, s.class_name, c.name as college_name
+                FROM students s
+                LEFT JOIN colleges c ON s.college_code = c.college_code
+                WHERE s.student_id = ?
+            """
+            result = self.db.execute_query(sql, (self.user.id,))
+            if result:
+                row = result[0]
+                college_name = row.get('college_name', '')
+        
+        return {
+            'name': self.user.name,
+            'id': self.user.id,
+            'major': self.user.extra_info.get('major') or getattr(self.user, 'major', ''),
+            'college': college_name,
+            'grade': self.user.extra_info.get('grade') or getattr(self.user, 'grade', ''),
+            'class_name': self.user.extra_info.get('class_name') or getattr(self.user, 'class_name', '')
+        }
+    
+    def _update_advice_result(self, advice: Optional[str], error: Optional[str]):
+        """更新建议结果显示"""
+        if self.advice_status_label:
+            if error:
+                # 错误状态 - 红色背景
+                status_frame = self.advice_status_label.master
+                status_frame.configure(fg_color="#FFEBEE", border_color="#E57373")
+                self.advice_status_label.configure(
+                    text=f"❌ {error}",
+                    text_color="#C62828",
+                    font=("Microsoft YaHei UI", 16, "bold")
+                )
+            else:
+                # 成功状态 - 绿色背景
+                status_frame = self.advice_status_label.master
+                status_frame.configure(fg_color="#E8F5E9", border_color="#81C784")
+                self.advice_status_label.configure(
+                    text="✅ 建议生成完成",
+                    text_color="#2E7D32",
+                    font=("Microsoft YaHei UI", 17, "bold")
+                )
+        
+        if self.advice_text_widget:
+            self.advice_text_widget.configure(state="normal")
+            self.advice_text_widget.delete("1.0", "end")
+            
+            if error:
+                error_text = f"生成建议时出现错误：\n\n{error}\n\n请检查：\n1. 是否设置了 DASH_SCOPE_API_KEY 环境变量\n2. API密钥是否有效\n3. 网络连接是否正常"
+                self.advice_text_widget.insert("1.0", error_text)
+                self.advice_text_widget.configure(text_color="#C62828")
+            elif advice:
+                self.advice_text_widget.insert("1.0", advice)
+                self.advice_text_widget.configure(text_color="#2C3E50")
+            else:
+                self.advice_text_widget.insert("1.0", "未能生成建议，请重试")
+                self.advice_text_widget.configure(text_color="#666666")
+            
+            self.advice_text_widget.configure(state="disabled")
+            
+            # 添加复制按钮（只在有建议时显示）
+            if advice and not self._copy_button_created:
+                copy_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+                copy_frame.pack(pady=(0, 10), padx=20)
+                
+                copy_button = ctk.CTkButton(
+                    copy_frame,
+                    text="📋 复制建议",
+                    width=180,
+                    height=45,
+                    font=("Microsoft YaHei UI", 16, "bold"),
+                    fg_color=self.BUPT_LIGHT_BLUE,
+                    hover_color=self.BUPT_BLUE,
+                    corner_radius=10,
+                    command=lambda: self._copy_advice_to_clipboard()
+                )
+                copy_button.pack()
+                self._copy_button_created = True
+    
+    def _copy_advice_to_clipboard(self):
+        """复制建议到剪贴板"""
+        if self.advice_text_widget:
+            advice_text = self.advice_text_widget.get("1.0", "end-1c")
+            self.root.clipboard_clear()
+            self.root.clipboard_append(advice_text)
+            messagebox.showinfo("成功", "建议已复制到剪贴板")
     
     def do_logout(self):
         """注销登录"""
