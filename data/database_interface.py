@@ -468,28 +468,34 @@ class DatabaseInterface:
                     
                     # 查询必修课程，并匹配学期（秋/春）
                     # 使用 curriculum_matrix 表来匹配学期
+                    # 注意：必须排除公选课（is_public_elective=1），公选课不能作为必修课程
                     pc_rows = self.db.query(
                         """
                         SELECT DISTINCT cm.course_id 
                         FROM curriculum_matrix cm
+                        LEFT JOIN courses c ON cm.course_id = c.course_id
                         WHERE cm.major_id=? 
                         AND cm.category='必修'
                         AND cm.grade=?
                         AND cm.term=?
+                        AND (c.is_public_elective IS NULL OR c.is_public_elective = 0)
                         """,
                         (major_id, academic_year, '秋' if is_autumn else '春')
                     )
                     required_course_ids = {r["course_id"] for r in pc_rows}
                     
                     # 如果没有在 curriculum_matrix 中找到，回退到 program_courses（兼容旧数据）
+                    # 同样需要排除公选课
                     if not required_course_ids:
                         pc_rows = self.db.query(
                             """
-                            SELECT course_id 
-                            FROM program_courses
-                            WHERE major_id=? 
-                            AND course_category='必修'
-                            AND grade_recommendation=?
+                            SELECT pc.course_id 
+                            FROM program_courses pc
+                            LEFT JOIN courses c ON pc.course_id = c.course_id
+                            WHERE pc.major_id=? 
+                            AND pc.course_category='必修'
+                            AND pc.grade_recommendation=?
+                            AND (c.is_public_elective IS NULL OR c.is_public_elective = 0)
                             """,
                             (major_id, academic_year)
                         )
