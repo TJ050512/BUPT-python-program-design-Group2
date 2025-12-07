@@ -92,7 +92,8 @@ class EnrollmentManager:
                 return False, f"您已选择了【{same_course_check}】，不能重复选择同一门课程"
             
             # 3. 检查时间冲突（包括公选课之间的冲突检查）
-            conflict = self._check_time_conflict(student_id, offering['class_time'], offering_id)
+            # 只检查当前学期的已选课程，不检查其他学期
+            conflict = self._check_time_conflict(student_id, offering['class_time'], offering_id, semester)
             if conflict:
                 return False, f"与已选课程【{conflict}】时间冲突"
             
@@ -355,14 +356,15 @@ class EnrollmentManager:
         result = self.db.execute_query(sql, (student_id, offering_id))
         return result[0]['count'] > 0 if result else False
     
-    def _check_time_conflict(self, student_id: str, class_time: str, offering_id: int = None) -> Optional[str]:
+    def _check_time_conflict(self, student_id: str, class_time: str, offering_id: int = None, current_semester: str = None) -> Optional[str]:
         """
-        检查时间冲突
+        检查时间冲突（只检查当前学期的已选课程）
         
         Args:
             student_id: 学号
             class_time: 要检查的课程时间字符串
             offering_id: 开课计划ID（可选，用于判断是否是公选课）
+            current_semester: 当前学期（如 2024-2025-1），只检查该学期的已选课程
         
         Returns:
             冲突的课程名称，无冲突返回None
@@ -390,22 +392,40 @@ class EnrollmentManager:
             if current_offering_info and len(current_offering_info) > 0:
                 is_current_public_elective = bool(current_offering_info[0].get('is_public_elective', 0))
         
-        # 获取学生已选的所有课程及其时间
-        sql = """
-            SELECT 
-                co.class_time,
-                c.course_name,
-                c.is_public_elective
-            FROM enrollments e
-            JOIN course_offerings co ON e.offering_id = co.offering_id
-            JOIN courses c ON co.course_id = c.course_id
-            WHERE e.student_id = ? 
-              AND e.status = 'enrolled'
-              AND co.class_time IS NOT NULL
-              AND co.class_time <> ''
-        """
-        
-        enrolled_courses = self.db.execute_query(sql, (student_id,))
+        # 获取学生已选的所有课程及其时间（只检查当前学期的课程）
+        # 如果 current_semester 为 None，则检查所有学期的课程（向后兼容）
+        if current_semester:
+            sql = """
+                SELECT 
+                    co.class_time,
+                    c.course_name,
+                    c.is_public_elective
+                FROM enrollments e
+                JOIN course_offerings co ON e.offering_id = co.offering_id
+                JOIN courses c ON co.course_id = c.course_id
+                WHERE e.student_id = ? 
+                  AND e.status = 'enrolled'
+                  AND e.semester = ?
+                  AND co.class_time IS NOT NULL
+                  AND co.class_time <> ''
+            """
+            enrolled_courses = self.db.execute_query(sql, (student_id, current_semester))
+        else:
+            # 如果没有提供学期，则检查所有学期的课程（向后兼容）
+            sql = """
+                SELECT 
+                    co.class_time,
+                    c.course_name,
+                    c.is_public_elective
+                FROM enrollments e
+                JOIN course_offerings co ON e.offering_id = co.offering_id
+                JOIN courses c ON co.course_id = c.course_id
+                WHERE e.student_id = ? 
+                  AND e.status = 'enrolled'
+                  AND co.class_time IS NOT NULL
+                  AND co.class_time <> ''
+            """
+            enrolled_courses = self.db.execute_query(sql, (student_id,))
         
         # 检查每个已选课程的时间段是否与当前课程冲突
         for course in enrolled_courses:
