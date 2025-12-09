@@ -253,8 +253,9 @@ class EnrollmentManager:
             Logger.error(f"退课失败: {e}")
             return False, "退课失败，请稍后重试"
     
-    def get_student_enrollments(self, student_id: str, 
-                                status: str = 'enrolled') -> List[Dict]:
+    def get_student_enrollments(self, student_id: str,
+                                status: str = 'enrolled',
+                                semester: Optional[str] = None) -> List[Dict]:
         """
         获取学生的选课记录
         
@@ -292,6 +293,9 @@ class EnrollmentManager:
         if status:
             sql += " AND e.status = ?"
             params.append(status)
+        if semester:
+            sql += " AND COALESCE(e.semester, co.semester) = ?"
+            params.append(semester)
         
         sql += " ORDER BY e.semester DESC, c.course_id"
         

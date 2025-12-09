@@ -7,6 +7,7 @@ import customtkinter as ctk
 from tkinter import messagebox, ttk
 import tkinter as tk
 import re
+import os
 import threading
 from typing import Optional, Dict
 from pathlib import Path
@@ -232,9 +233,12 @@ class StudentWindow:
         )
         refresh_btn.pack(side="right")
         
-        # 获取选课记录（包括所有状态的选课，以便显示选修课进度）
+        # 当前学期（用于筛选本学期选课与竞价记录）
+        current_semester = os.getenv("CURRENT_SEMESTER", "2024-2025-2")
+
+        # 获取选课记录（仅当前学期，包含所有状态，便于展示）
         all_enrollments = self.enrollment_manager.get_student_enrollments(
-            self.user.id, status=None  # 获取所有状态的选课
+            self.user.id, status=None, semester=current_semester
         )
         
         # 获取已选中的课程（enrolled状态）
@@ -244,50 +248,58 @@ class StudentWindow:
         # 排除已经enrolled的课程
         enrolled_offering_ids = [e['offering_id'] for e in enrolled_courses]
         
-        if enrolled_offering_ids:
-            enrolled_ids_str = ','.join(map(str, enrolled_offering_ids))
-            pending_bids = self.db.execute_query("""
-                SELECT 
-                    cb.offering_id,
-                    cb.points_bid,
-                    cb.status,
-                    co.course_id,
-                    c.course_name,
-                    c.credits,
-                    c.course_type,
-                    co.teacher_id,
-                    t.name as teacher_name,
-                    co.class_time,
-                    co.classroom
-                FROM course_biddings cb
-                JOIN course_offerings co ON cb.offering_id = co.offering_id
-                JOIN courses c ON co.course_id = c.course_id
-                JOIN teachers t ON co.teacher_id = t.teacher_id
-                WHERE cb.student_id = ? 
-                  AND cb.status IN ('pending', 'accepted', 'rejected')
-                  AND cb.offering_id NOT IN ({})
-            """.format(enrolled_ids_str), (self.user.id,))
-        else:
-            pending_bids = self.db.execute_query("""
-                SELECT 
-                    cb.offering_id,
-                    cb.points_bid,
-                    cb.status,
-                    co.course_id,
-                    c.course_name,
-                    c.credits,
-                    c.course_type,
-                    co.teacher_id,
-                    t.name as teacher_name,
-                    co.class_time,
-                    co.classroom
-                FROM course_biddings cb
-                JOIN course_offerings co ON cb.offering_id = co.offering_id
-                JOIN courses c ON co.course_id = c.course_id
-                JOIN teachers t ON co.teacher_id = t.teacher_id
-                WHERE cb.student_id = ? 
-                  AND cb.status IN ('pending', 'accepted', 'rejected')
-            """, (self.user.id,))
+        # 若数据库尚未创建 course_biddings 表，避免查询报错
+        bidding_table_exists = self.db.execute_query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='course_biddings'"
+        )
+        pending_bids = []
+        if bidding_table_exists:
+            if enrolled_offering_ids:
+                enrolled_ids_str = ','.join(map(str, enrolled_offering_ids))
+                pending_bids = self.db.execute_query("""
+                    SELECT 
+                        cb.offering_id,
+                        cb.points_bid,
+                        cb.status,
+                        co.course_id,
+                        c.course_name,
+                        c.credits,
+                        c.course_type,
+                        co.teacher_id,
+                        t.name as teacher_name,
+                        co.class_time,
+                        co.classroom
+                    FROM course_biddings cb
+                    JOIN course_offerings co ON cb.offering_id = co.offering_id
+                    JOIN courses c ON co.course_id = c.course_id
+                    JOIN teachers t ON co.teacher_id = t.teacher_id
+                    WHERE cb.student_id = ? 
+                      AND cb.status IN ('pending', 'accepted', 'rejected')
+                      AND co.semester = ?
+                      AND cb.offering_id NOT IN ({})
+                """.format(enrolled_ids_str), (self.user.id, current_semester))
+            else:
+                pending_bids = self.db.execute_query("""
+                    SELECT 
+                        cb.offering_id,
+                        cb.points_bid,
+                        cb.status,
+                        co.course_id,
+                        c.course_name,
+                        c.credits,
+                        c.course_type,
+                        co.teacher_id,
+                        t.name as teacher_name,
+                        co.class_time,
+                        co.classroom
+                    FROM course_biddings cb
+                    JOIN course_offerings co ON cb.offering_id = co.offering_id
+                    JOIN courses c ON co.course_id = c.course_id
+                    JOIN teachers t ON co.teacher_id = t.teacher_id
+                    WHERE cb.student_id = ? 
+                      AND cb.status IN ('pending', 'accepted', 'rejected')
+                      AND co.semester = ?
+                """, (self.user.id, current_semester))
         
         if not enrolled_courses and not pending_bids:
             no_data_label = ctk.CTkLabel(
@@ -1218,9 +1230,12 @@ class StudentWindow:
         )
         title.pack(pady=20, anchor="w", padx=20)
         
-        # 获取选课记录
+        # 获取当前学期（环境变量，默认2024-2025-2）
+        current_semester = os.getenv("CURRENT_SEMESTER", "2024-2025-2")
+
+        # 获取当前学期的选课记录，避免跨学期课程混杂
         enrollments = self.enrollment_manager.get_student_enrollments(
-            self.user.id, status='enrolled'
+            self.user.id, status='enrolled', semester=current_semester
         )
         
         if not enrollments:
@@ -2058,7 +2073,6 @@ class StudentWindow:
         academic_year = min(max(academic_year, 1), 4)  # 限制在1-4之间
         
         # 获取当前学期（秋/春）
-        import os
         current_semester = os.getenv("CURRENT_SEMESTER", "2024-2025-2")
         sem_idx = current_semester.split("-")[-1]
         current_term = '秋' if sem_idx == '1' else '春'
@@ -2150,6 +2164,8 @@ class StudentWindow:
             course_name = record['course_name']
             credits = record['credits']
             category = record['category']
+            # 类型标签：必修红色，其他（选修/公选）蓝色
+            category_tag = "cat_required" if category == "必修" else "cat_elective"
             
             grade_cn = {1: "一", 2: "二", 3: "三", 4: "四"}.get(grade, str(grade))
             grade_term_text = f"大{grade_cn}（{term}）"
@@ -2191,7 +2207,7 @@ class StudentWindow:
                 f"{credits}",
                 category,
                 status_text
-            ), tags=(tag,))
+            ), tags=(tag, category_tag))
         
         # 设置标签颜色和样式
         tree.tag_configure("available", foreground="#27AE60")  # 绿色 - 可选
@@ -2200,6 +2216,9 @@ class StudentWindow:
         tree.tag_configure("not_offered", foreground="#95A5A6") # 灰色 - 未开课
         tree.tag_configure("past", foreground="#BDC3C7")       # 浅灰 - 已过期
         tree.tag_configure("future", foreground="#95A5A6")     # 灰色 - 未到学期
+        # 课程类别颜色
+        tree.tag_configure("cat_required", foreground="#E74C3C")  # 红色 - 必修
+        tree.tag_configure("cat_elective", foreground="#2980B9")  # 蓝色 - 选修/公选
         
         # 绑定双击事件
         tree.bind("<Double-1>", lambda e: self._on_curriculum_course_click(tree))
