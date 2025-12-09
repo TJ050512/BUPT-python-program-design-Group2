@@ -49,6 +49,8 @@ DEPT_NORMALIZE_MAP = {
     "网络空间安全学院": "网络空间安全学院",
     "人工智能学院": "人工智能学院",
     "国际学院": "国际学院",
+    "教务处": "教务处",
+    "校武装部": "校武装部",
 }
 
 # ===== 学院 → 专业池（示例贴近 BUPT，可根据官方专业目录再增减）=====
@@ -123,8 +125,8 @@ def build_course_pool() -> Dict[str, Dict[str, Any]]:
     add("ZX101", "思想道德与法治",     3.0, 48, "公共必修", "马克思主义学院")
     add("ZX102", "马克思主义基本原理", 3.0, 48, "公共必修", "马克思主义学院")
     add("ZX103", "毛泽东思想和中国特色社会主义理论体系概论", 4.0, 64, "公共必修", "马克思主义学院")
-    add("ML101", "军事理论",           2.0, 32, "公共必修", "军训教研部")
-    add("XL101", "大学生心理健康教育", 2.0, 32, "公共必修", "学生工作部")
+    add("ML101", "军事理论",           2.0, 32, "公共必修", "校武装部")
+    add("XL101", "大学生心理健康教育", 2.0, 32, "公共必修", "教务处")
     add("YW101", "大学语文",           2.0, 32, "公共必修", "人文学院")
 
     # === 二、通识选修（全校公选，is_public=1） ===
@@ -481,7 +483,16 @@ def create_teachers(db: DBAdapter, n: int = 10):
         "网络空间安全学院",
         "人工智能学院",
         "国际学院",
+        "教务处",
+        "校武装部",
     ]
+
+    # 特定部门的教师数量上限（避免过度生成）
+    dept_caps = {
+        "教务处": 10,
+        "校武装部": 10,
+    }
+    dept_counts = {d: 0 for d in departments}
 
     # 职称、岗位类型、职级映射（保留你之前的增强）
     title_weights = {
@@ -520,7 +531,12 @@ def create_teachers(db: DBAdapter, n: int = 10):
             serial_width = 6
 
         # 2) 按前缀+随机序列，生成 10 位合法教职工工号
-        dept = random.choice(departments)
+        # 按部门上限挑选；若所有受限部门都满，则在剩余部门中随机
+        available = [d for d in departments if dept_counts[d] < dept_caps.get(d, float("inf"))]
+        if not available:
+            available = departments
+        dept = random.choice(available)
+        dept_counts[dept] += 1
         c_idx = departments.index(dept) + 1
         m_idx = random.randint(1, 3) 
         college_code = f"{c_idx:02d}{m_idx}" 
@@ -1955,33 +1971,15 @@ def bind_evening_public_offerings(db, semester: str="2024-2025-2"):
 def seed_colleges_and_majors(db: DBAdapter):
     """根据 COLLEGE_CATALOG 插入学院和其下的专业（每院≥2）。"""
     for code, name, majors in COLLEGE_CATALOG:
-        # 检查学院是否已存在
-        existing = db.execute_query(
-            "SELECT college_code FROM colleges WHERE college_code=? LIMIT 1",
-            (code,)
-        )
-        if not existing:
-            # 学院不存在，插入
-            result = db.insert_data("colleges", {"college_code": code, "name": name})
-            if result is None:
-                # 插入失败（可能是 UNIQUE constraint），但这是预期的，静默处理
-                pass
-        else:
-            # 学院已存在，跳过
+        try:
+            db.insert_data("colleges", {"college_code": code, "name": name})
+        except Exception:
             pass
-        
         for m in majors:
-            # 检查专业是否已存在
-            existing_major = db.execute_query(
-                "SELECT major_id FROM majors WHERE college_code=? AND name=? LIMIT 1",
-                (code, m)
-            )
-            if not existing_major:
-                # 专业不存在，插入
-                result = db.insert_data("majors", {"college_code": code, "name": m})
-                if result is None:
-                    # 插入失败（可能是 UNIQUE constraint），但这是预期的，静默处理
-                    pass
+            try:
+                db.insert_data("majors", {"college_code": code, "name": m})
+            except Exception:
+                pass
 
 
 def seed_classrooms(db: DBAdapter):
@@ -2459,8 +2457,6 @@ def seed_all(db: DBAdapter, students: int = 200, teachers: int = 10, semester: s
         db.execute_update("DELETE FROM students")
         db.execute_update("DELETE FROM teachers")
         db.execute_update("DELETE FROM courses")
-        db.execute_update("DELETE FROM majors")  # 先删除专业（有外键依赖）
-        db.execute_update("DELETE FROM colleges")  # 再删除学院
         Logger.info("✅ 已清空旧数据")
     except Exception as e:
         Logger.warning(f"清空旧数据时出现警告（可能表不存在）: {e}")
