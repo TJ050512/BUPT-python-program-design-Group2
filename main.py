@@ -1,16 +1,14 @@
-
-#!/usr/bin/env python3
 """
 北京邮电大学教学管理系统 - 主程序入口
 Main Entry Point for BUPT Teaching Management System
 """
 
 import sys
-import os
-import re
 import customtkinter as ctk
 from gui.login_window import LoginWindow
 from utils.logger import Logger
+import os
+import re
 
 def main():
     """主函数"""
