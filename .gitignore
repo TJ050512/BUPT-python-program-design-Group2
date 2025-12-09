@@ -56,6 +56,7 @@ exports/*
 .coverage
 htmlcov/
 .pytest_cache/
+.hypothesis/
 
 # Jupyter Notebook
 .ipynb_checkpoints

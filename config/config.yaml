@@ -7,7 +7,7 @@ analysis:
 app:
   debug: false
   name: 智能数据管理系统
-  version: 1.5.0
+  version: 2.0.0
 cache:
   enabled: true
   expire_time: 3600

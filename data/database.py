@@ -306,9 +306,6 @@ class Database:
         ''')
 
         # === 课程矩阵表（用于前端显示培养方案） ===
-        # 注意：同一门课程可能在不同年级、不同学期都需要开课
-        # 例如：ML101 在大一秋季，ML201 在大二秋季
-        # 所以 UNIQUE 约束应该是 (major_id, grade, term, course_id)
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS curriculum_matrix (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -322,7 +319,7 @@ class Database:
                 credits REAL NOT NULL,
                 FOREIGN KEY (major_id) REFERENCES majors(major_id),
                 FOREIGN KEY (course_id) REFERENCES courses(course_id),
-                UNIQUE(major_id, grade, term, course_id)
+                UNIQUE(major_id, course_id)
             )
         ''')
 
@@ -394,14 +391,13 @@ class Database:
 
         # === 触发器：防止同一门课程重复选课 (即使老师不同) ===
         # 目标：在插入 enrollments 之前，检查该学生是否已经选择了该课程的任一班级
-        # 注意：允许在不同学期选择同一门课程（如EN103和EN104可以在不同学期选）
         self.cursor.executescript('''
             CREATE TRIGGER IF NOT EXISTS trg_single_course_enrollment_bi
             BEFORE INSERT ON enrollments
             BEGIN
                 SELECT
                     CASE
-                        -- 检查学生是否已经选了这门课程的任何一个班级（同一学期内）
+                        -- 检查学生是否已经选了这门课程的任何一个班级（只检查enrolled和completed状态）
                         WHEN EXISTS (
                             SELECT 1
                             FROM enrollments e
@@ -410,8 +406,8 @@ class Database:
                             WHERE e.student_id = NEW.student_id -- 目标学生
                               -- 当前尝试插入的 offering_id 对应的 course_id
                               AND o.course_id = (SELECT course_id FROM course_offerings WHERE offering_id = NEW.offering_id)
-                              -- 关键：只检查同一学期内的重复选课
-                              AND e.semester = NEW.semester
+                              -- 只检查已选课（enrolled）和已完成（completed）的记录，忽略已退课（dropped）的记录
+                              AND e.status IN ('enrolled', 'completed')
                         )
                         THEN RAISE(ABORT, '该学生已选了该课程的任一班级，不能重复选择')
                     END;
@@ -610,12 +606,7 @@ class Database:
             
             return self.cursor.lastrowid
         except Exception as e:
-            error_msg = str(e)
-            # UNIQUE constraint 错误通常是预期的（尝试插入已存在的记录），使用 WARNING 级别
-            if "UNIQUE constraint" in error_msg:
-                Logger.debug(f"插入数据跳过（记录已存在）: {error_msg}, 表: {table}")
-            else:
-                Logger.error(f"插入数据失败: {error_msg}, 表: {table}")
+            Logger.error(f"插入数据失败: {e}, 表: {table}")
             self.conn.rollback()
             return None
     

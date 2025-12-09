@@ -12,6 +12,8 @@ from utils.logger import Logger
 from core.course_manager import CourseManager
 from core.user_manager import UserManager
 from core.enrollment_manager import EnrollmentManager
+from core.points_manager import PointsManager
+from core.bidding_manager import BiddingManager
 from utils.crypto import CryptoUtil
 import re
 from datetime import datetime
@@ -45,6 +47,8 @@ class AdminWindow:
         self.course_manager = CourseManager(db)
         self.user_manager = UserManager(db)
         self.enrollment_manager = EnrollmentManager(db)
+        self.points_manager = PointsManager(db)
+        self.bidding_manager = BiddingManager(db, self.points_manager)
         
         # 设置窗口
         self.root.title(f"北京邮电大学教学管理系统 - 管理员端 - {user.name}")
@@ -273,8 +277,19 @@ class AdminWindow:
         )
         title.pack(pady=20, anchor="w", padx=20)
         
+        # 创建标签页
+        tabview = ctk.CTkTabview(self.content_frame, fg_color="white")
+        tabview.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        # 添加标签页
+        tabview.add("用户列表")
+        tabview.add("积分管理")
+        
+        # 用户列表标签页
+        user_list_tab = tabview.tab("用户列表")
+        
         # 用户类型选择
-        type_frame = ctk.CTkFrame(self.content_frame, fg_color="#F0F8FF", corner_radius=10)
+        type_frame = ctk.CTkFrame(user_list_tab, fg_color="#F0F8FF", corner_radius=10)
         type_frame.pack(fill="x", padx=20, pady=10)
         
         type_inner_frame = ctk.CTkFrame(type_frame, fg_color="transparent")
@@ -324,7 +339,7 @@ class AdminWindow:
         admin_radio.pack(side="left")
         
         # 操作按钮
-        button_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        button_frame = ctk.CTkFrame(user_list_tab, fg_color="transparent")
         button_frame.pack(fill="x", padx=20, pady=10)
         
         add_button = ctk.CTkButton(
@@ -351,11 +366,910 @@ class AdminWindow:
         refresh_button.pack(side="left")
         
         # 用户列表容器
-        self.user_list_frame = ctk.CTkFrame(self.content_frame, corner_radius=10)
+        self.user_list_frame = ctk.CTkFrame(user_list_tab, corner_radius=10)
         self.user_list_frame.pack(fill="both", expand=True, padx=20, pady=10)
         
         # 初始显示学生列表
         self.refresh_user_list()
+        
+        # 积分管理标签页
+        points_tab = tabview.tab("积分管理")
+        self.show_points_management_tab(points_tab)
+    
+    def show_points_management_tab(self, points_tab):
+        """显示积分管理标签页"""
+        # 顶部操作按钮区域
+        button_frame = ctk.CTkFrame(points_tab, fg_color="transparent")
+        button_frame.pack(fill="x", padx=20, pady=10)
+        
+        refresh_button = ctk.CTkButton(
+            button_frame,
+            text="刷新",
+            width=100,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            fg_color=self.BUPT_LIGHT_BLUE,
+            command=lambda: self.refresh_points_list(points_list_frame)
+        )
+        refresh_button.pack(side="left", padx=(0, 10))
+        
+        batch_reset_button = ctk.CTkButton(
+            button_frame,
+            text="批量重置积分",
+            width=140,
+            height=40,
+            font=("Microsoft YaHei UI", 14, "bold"),
+            fg_color="#FF6B6B",
+            hover_color="#FF5252",
+            command=lambda: self.batch_reset_points_dialog(points_list_frame)
+        )
+        batch_reset_button.pack(side="left", padx=(0, 10))
+        
+        bidding_button = ctk.CTkButton(
+            button_frame,
+            text="查看选修课竞价",
+            width=140,
+            height=40,
+            font=("Microsoft YaHei UI", 14, "bold"),
+            fg_color="#4CAF50",
+            hover_color="#45A049",
+            command=self.show_elective_bidding_dialog
+        )
+        bidding_button.pack(side="left")
+        
+        # 积分列表容器
+        points_list_frame = ctk.CTkFrame(points_tab, corner_radius=10)
+        points_list_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        # 初始显示积分列表
+        self.refresh_points_list(points_list_frame)
+    
+    def refresh_points_list(self, container_frame):
+        """刷新积分列表"""
+        # 清空容器
+        for widget in container_frame.winfo_children():
+            widget.destroy()
+        
+        # 查询所有学生的积分信息
+        sql = """
+            SELECT 
+                s.student_id,
+                s.name,
+                s.major,
+                s.grade,
+                s.class_name,
+                s.course_points,
+                COALESCE(
+                    (SELECT SUM(points_bid) 
+                     FROM course_biddings 
+                     WHERE student_id = s.student_id AND status='pending'), 
+                    0
+                ) as pending_points
+            FROM students s
+            WHERE s.status='active'
+            ORDER BY s.student_id
+        """
+        
+        students = self.db.execute_query(sql)
+        
+        if not students:
+            no_data_label = ctk.CTkLabel(
+                container_frame,
+                text="暂无学生数据",
+                font=("Microsoft YaHei UI", 16),
+                text_color="#666666"
+            )
+            no_data_label.pack(pady=50)
+            return
+        
+        # 统计信息
+        total_students = len(students)
+        total_points = sum(s.get('course_points', 0) or 0 for s in students)
+        avg_points = total_points / total_students if total_students > 0 else 0
+        
+        stats_frame = ctk.CTkFrame(container_frame, fg_color="#F0F8FF", corner_radius=10)
+        stats_frame.pack(fill="x", padx=20, pady=(10, 0))
+        
+        stats_inner = ctk.CTkFrame(stats_frame, fg_color="transparent")
+        stats_inner.pack(pady=10, padx=20)
+        
+        stats_text = f"总学生数: {total_students}    总积分: {total_points}    平均积分: {avg_points:.1f}"
+        stats_label = ctk.CTkLabel(
+            stats_inner,
+            text=stats_text,
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE
+        )
+        stats_label.pack()
+        
+        # 创建表格
+        style = ttk.Style()
+        style.configure("Points.Treeview", 
+                       font=("Microsoft YaHei UI", 13), 
+                       rowheight=35,
+                       background="white",
+                       foreground="black",
+                       fieldbackground="white")
+        style.configure("Points.Treeview.Heading", 
+                       font=("Microsoft YaHei UI", 14, "bold"),
+                       background="#E8F4F8",
+                       foreground=self.BUPT_BLUE,
+                       relief="flat")
+        
+        columns = ("student_id", "name", "major", "grade", "class", "points", "pending", "available", "action")
+        tree = ttk.Treeview(
+            container_frame,
+            columns=columns,
+            show="headings",
+            height=20,
+            style="Points.Treeview"
+        )
+        
+        tree.heading("student_id", text="学号")
+        tree.heading("name", text="姓名")
+        tree.heading("major", text="专业")
+        tree.heading("grade", text="年级")
+        tree.heading("class", text="班级")
+        tree.heading("points", text="总积分")
+        tree.heading("pending", text="冻结积分")
+        tree.heading("available", text="可用积分")
+        tree.heading("action", text="操作")
+        
+        tree.column("student_id", width=100)
+        tree.column("name", width=80)
+        tree.column("major", width=150)
+        tree.column("grade", width=60)
+        tree.column("class", width=80)
+        tree.column("points", width=80)
+        tree.column("pending", width=80)
+        tree.column("available", width=80)
+        tree.column("action", width=80)
+        
+        for student in students:
+            course_points = student.get('course_points', 0) or 0
+            pending_points = student.get('pending_points', 0) or 0
+            available_points = course_points - pending_points
+            
+            tree.insert("", "end", values=(
+                student['student_id'],
+                student['name'],
+                student.get('major', ''),
+                student.get('grade', ''),
+                student.get('class_name', ''),
+                course_points,
+                pending_points,
+                available_points,
+                "调整"
+            ), tags=(student['student_id'],))
+        
+        # 双击调整积分
+        def on_double_click(event):
+            try:
+                selection = tree.selection()
+                if selection:
+                    item = tree.item(selection[0])
+                    student_id = item['values'][0]
+                    student_name = item['values'][1]
+                    current_points = item['values'][5]
+                    self.adjust_student_points_dialog(student_id, student_name, current_points, container_frame)
+            except Exception as e:
+                Logger.error(f"打开调整积分对话框失败: {e}", exc_info=True)
+                messagebox.showerror("错误", f"打开对话框失败：{str(e)}")
+        
+        tree.bind("<Double-1>", on_double_click)
+        
+        scrollbar = ttk.Scrollbar(container_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        tree.pack(side="left", fill="both", expand=True, padx=(20, 0), pady=10)
+        scrollbar.pack(side="right", fill="y", pady=10, padx=(0, 20))
+    
+    def adjust_student_points_dialog(self, student_id, student_name, current_points, container_frame):
+        """调整学生积分对话框"""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("调整学生积分")
+        dialog.geometry("600x600")
+        dialog.resizable(True, True)  # 允许调整大小
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # 居中显示
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (600 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (600 // 2)
+        dialog.geometry(f"600x600+{x}+{y}")
+        dialog.minsize(550, 550)  # 设置最小尺寸
+        
+        # 主容器
+        main_frame = ctk.CTkFrame(dialog, fg_color="white")
+        main_frame.pack(fill="both", expand=True)
+        
+        # 标题区域
+        header_frame = ctk.CTkFrame(main_frame, fg_color=self.BUPT_BLUE, height=80)
+        header_frame.pack(fill="x")
+        header_frame.pack_propagate(False)
+        
+        title_label = ctk.CTkLabel(
+            header_frame,
+            text="调整学生积分",
+            font=("Microsoft YaHei UI", 24, "bold"),
+            text_color="white"
+        )
+        title_label.pack(expand=True)
+        
+        # 内容区域 - 不使用expand，给按钮留空间
+        content_frame = ctk.CTkFrame(main_frame, fg_color="white")
+        content_frame.pack(fill="x", padx=30, pady=(20, 10))
+        
+        # 学生信息
+        info_frame = ctk.CTkFrame(content_frame, fg_color="#F0F8FF", corner_radius=10)
+        info_frame.pack(fill="x", pady=(0, 12))
+        
+        info_label = ctk.CTkLabel(
+            info_frame,
+            text=f"学号: {student_id}    姓名: {student_name}\n当前积分: {current_points}",
+            font=("Microsoft YaHei UI", 14),
+            text_color=self.BUPT_BLUE,
+            justify="left"
+        )
+        info_label.pack(pady=12, padx=20)
+        
+        # 调整类型
+        type_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        type_frame.pack(fill="x", pady=8)
+        
+        type_label = ctk.CTkLabel(
+            type_frame,
+            text="调整类型：",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE,
+            width=100,
+            anchor="w"
+        )
+        type_label.pack(side="left", padx=(0, 10))
+        
+        adjust_type_var = ctk.StringVar(value="add")
+        
+        add_radio = ctk.CTkRadioButton(
+            type_frame,
+            text="增加",
+            variable=adjust_type_var,
+            value="add",
+            font=("Microsoft YaHei UI", 14),
+            fg_color=self.BUPT_BLUE
+        )
+        add_radio.pack(side="left", padx=(0, 20))
+        
+        deduct_radio = ctk.CTkRadioButton(
+            type_frame,
+            text="减少",
+            variable=adjust_type_var,
+            value="deduct",
+            font=("Microsoft YaHei UI", 14),
+            fg_color=self.BUPT_BLUE
+        )
+        deduct_radio.pack(side="left")
+        
+        # 积分数量
+        points_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        points_frame.pack(fill="x", pady=8)
+        
+        points_label = ctk.CTkLabel(
+            points_frame,
+            text="积分数量 *",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE,
+            width=100,
+            anchor="w"
+        )
+        points_label.pack(side="left", padx=(0, 10))
+        
+        points_entry = ctk.CTkEntry(
+            points_frame,
+            width=300,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            placeholder_text="请输入积分数量"
+        )
+        points_entry.pack(side="left", fill="x", expand=True)
+        
+        # 调整原因
+        reason_label = ctk.CTkLabel(
+            content_frame,
+            text="调整原因 *",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE,
+            anchor="w"
+        )
+        reason_label.pack(fill="x", pady=(8, 5))
+        
+        reason_text = ctk.CTkTextbox(
+            content_frame,
+            width=400,
+            height=60,
+            font=("Microsoft YaHei UI", 13)
+        )
+        reason_text.pack(fill="x", pady=(0, 8))
+        
+        # 按钮区域 - 放在main_frame底部，不在content_frame里
+        button_frame = ctk.CTkFrame(main_frame, fg_color="white", height=80)
+        button_frame.pack(fill="x", side="bottom", pady=(0, 20))
+        button_frame.pack_propagate(False)  # 防止被压缩
+        
+        def do_adjust():
+            # 验证输入
+            try:
+                points = int(points_entry.get().strip())
+                if points <= 0:
+                    messagebox.showerror("错误", "积分数量必须大于0", parent=dialog)
+                    return
+            except ValueError:
+                messagebox.showerror("错误", "请输入有效的积分数量", parent=dialog)
+                return
+            
+            reason = reason_text.get("1.0", "end").strip()
+            if not reason:
+                messagebox.showerror("错误", "请输入调整原因", parent=dialog)
+                return
+            
+            # 根据类型计算积分变化
+            adjust_type = adjust_type_var.get()
+            if adjust_type == "add":
+                points_change = points
+            else:
+                points_change = -points
+            
+            # 调用管理员调整积分方法
+            success, msg = self.points_manager.admin_adjust_points(
+                self.user.id,
+                student_id,
+                points_change,
+                reason
+            )
+            
+            if success:
+                messagebox.showinfo("成功", msg, parent=dialog)
+                dialog.destroy()
+                # 刷新积分列表
+                self.refresh_points_list(container_frame)
+            else:
+                messagebox.showerror("错误", msg, parent=dialog)
+        
+        # 创建一个居中的按钮容器
+        button_container = ctk.CTkFrame(button_frame, fg_color="transparent")
+        button_container.pack(expand=True)
+        
+        confirm_button = ctk.CTkButton(
+            button_container,
+            text="确认调整",
+            width=180,
+            height=45,
+            font=("Microsoft YaHei UI", 15, "bold"),
+            fg_color=self.BUPT_BLUE,
+            hover_color=self.BUPT_LIGHT_BLUE,
+            command=do_adjust
+        )
+        confirm_button.pack(side="left", padx=15)
+        
+        cancel_button = ctk.CTkButton(
+            button_container,
+            text="取消",
+            width=180,
+            height=45,
+            font=("Microsoft YaHei UI", 15, "bold"),
+            fg_color="#95A5A6",
+            hover_color="#7F8C8D",
+            command=dialog.destroy
+        )
+        cancel_button.pack(side="left", padx=15)
+        
+        # 绑定回车键确认
+        points_entry.bind("<Return>", lambda e: do_adjust())
+        
+        # 聚焦到输入框
+        points_entry.focus()
+    
+    def batch_reset_points_dialog(self, container_frame):
+        """批量重置积分对话框"""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("批量重置积分")
+        dialog.geometry("550x450")
+        dialog.resizable(True, True)  # 允许调整大小
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # 居中显示
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (550 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (450 // 2)
+        dialog.geometry(f"550x450+{x}+{y}")
+        dialog.minsize(500, 400)  # 设置最小尺寸
+        
+        # 主容器
+        main_frame = ctk.CTkFrame(dialog, fg_color="white")
+        main_frame.pack(fill="both", expand=True)
+        
+        # 标题区域
+        header_frame = ctk.CTkFrame(main_frame, fg_color="#FF6B6B", height=80)
+        header_frame.pack(fill="x")
+        header_frame.pack_propagate(False)
+        
+        title_label = ctk.CTkLabel(
+            header_frame,
+            text="批量重置积分",
+            font=("Microsoft YaHei UI", 24, "bold"),
+            text_color="white"
+        )
+        title_label.pack(expand=True)
+        
+        # 内容区域 - 不使用expand，给按钮留空间
+        content_frame = ctk.CTkFrame(main_frame, fg_color="white")
+        content_frame.pack(fill="x", padx=30, pady=(20, 10))
+        
+        # 警告信息
+        warning_frame = ctk.CTkFrame(content_frame, fg_color="#FFF3CD", corner_radius=10)
+        warning_frame.pack(fill="x", pady=(0, 15))
+        
+        warning_label = ctk.CTkLabel(
+            warning_frame,
+            text="⚠️  此操作将重置所有活跃学生的积分\n请谨慎操作，该操作不可撤销！",
+            font=("Microsoft YaHei UI", 13),
+            text_color="#856404",
+            justify="center"
+        )
+        warning_label.pack(pady=12, padx=20)
+        
+        # 重置积分值
+        points_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        points_frame.pack(fill="x", pady=10)
+        
+        points_label = ctk.CTkLabel(
+            points_frame,
+            text="重置积分值：",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE,
+            width=120,
+            anchor="w"
+        )
+        points_label.pack(side="left", padx=(0, 10))
+        
+        points_entry = ctk.CTkEntry(
+            points_frame,
+            width=260,
+            height=40,
+            font=("Microsoft YaHei UI", 14)
+        )
+        points_entry.insert(0, "200")  # 默认值
+        points_entry.pack(side="left", fill="x", expand=True)
+        
+        # 确认文本
+        confirm_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        confirm_frame.pack(fill="x", pady=15)
+        
+        confirm_label = ctk.CTkLabel(
+            confirm_frame,
+            text="请输入 RESET 确认操作：",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE,
+            width=200,
+            anchor="w"
+        )
+        confirm_label.pack(side="left", padx=(0, 10))
+        
+        confirm_entry = ctk.CTkEntry(
+            confirm_frame,
+            width=180,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            placeholder_text="输入 RESET"
+        )
+        confirm_entry.pack(side="left", fill="x", expand=True)
+        
+        # 按钮区域 - 放在main_frame底部，不在content_frame里
+        button_frame = ctk.CTkFrame(main_frame, fg_color="white", height=80)
+        button_frame.pack(fill="x", side="bottom", pady=(0, 20))
+        button_frame.pack_propagate(False)  # 防止被压缩
+        
+        def do_reset():
+            # 验证确认文本
+            if confirm_entry.get().strip() != "RESET":
+                messagebox.showerror("错误", "请输入 RESET 确认操作", parent=dialog)
+                return
+            
+            # 验证积分值
+            try:
+                points = int(points_entry.get().strip())
+                if points < 0:
+                    messagebox.showerror("错误", "积分不能为负数", parent=dialog)
+                    return
+            except ValueError:
+                messagebox.showerror("错误", "请输入有效的积分值", parent=dialog)
+                return
+            
+            # 再次确认
+            if not messagebox.askyesno(
+                "最终确认",
+                f"确定要将所有学生的积分重置为 {points} 分吗？\n此操作不可撤销！",
+                parent=dialog
+            ):
+                return
+            
+            # 调用批量重置方法
+            success, msg = self.points_manager.batch_reset_points(
+                self.user.id,
+                points
+            )
+            
+            if success:
+                messagebox.showinfo("成功", msg, parent=dialog)
+                dialog.destroy()
+                # 刷新积分列表
+                self.refresh_points_list(container_frame)
+            else:
+                messagebox.showerror("错误", msg, parent=dialog)
+        
+        # 创建一个居中的按钮容器
+        button_container = ctk.CTkFrame(button_frame, fg_color="transparent")
+        button_container.pack(expand=True)
+        
+        reset_button = ctk.CTkButton(
+            button_container,
+            text="确认重置",
+            width=180,
+            height=45,
+            font=("Microsoft YaHei UI", 15, "bold"),
+            fg_color="#FF6B6B",
+            hover_color="#FF5252",
+            command=do_reset
+        )
+        reset_button.pack(side="left", padx=15)
+        
+        cancel_button = ctk.CTkButton(
+            button_container,
+            text="取消",
+            width=180,
+            height=45,
+            font=("Microsoft YaHei UI", 15, "bold"),
+            fg_color="#95A5A6",
+            hover_color="#7F8C8D",
+            command=dialog.destroy
+        )
+        cancel_button.pack(side="left", padx=15)
+        
+        # 绑定回车键
+        confirm_entry.bind("<Return>", lambda e: do_reset())
+        
+        # 聚焦到确认输入框
+        confirm_entry.focus()
+    
+    def show_elective_bidding_dialog(self):
+        """查看选修课竞价对话框"""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("选修课竞价情况")
+        dialog.geometry("1200x700")
+        dialog.resizable(True, True)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # 居中显示
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (1200 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (700 // 2)
+        dialog.geometry(f"1200x700+{x}+{y}")
+        
+        # 主容器
+        main_frame = ctk.CTkFrame(dialog, fg_color="white")
+        main_frame.pack(fill="both", expand=True)
+        
+        # 标题区域
+        header_frame = ctk.CTkFrame(main_frame, fg_color="#4CAF50", height=80)
+        header_frame.pack(fill="x")
+        header_frame.pack_propagate(False)
+        
+        title_label = ctk.CTkLabel(
+            header_frame,
+            text="选修课竞价情况",
+            font=("Microsoft YaHei UI", 24, "bold"),
+            text_color="white"
+        )
+        title_label.pack(expand=True)
+        
+        # 内容区域
+        content_frame = ctk.CTkFrame(main_frame, fg_color="white")
+        content_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # 查询所有有竞价的选修课（包括所有状态的竞价）
+        sql = """
+            SELECT 
+                co.offering_id,
+                c.course_name,
+                c.course_type,
+                co.class_time,
+                co.classroom,
+                co.max_students,
+                co.current_students,
+                co.bidding_deadline,
+                co.bidding_status,
+                COUNT(cb.bidding_id) as bid_count,
+                MAX(cb.points_bid) as max_points,
+                MIN(cb.points_bid) as min_points,
+                AVG(cb.points_bid) as avg_points,
+                SUM(CASE WHEN cb.status='pending' THEN 1 ELSE 0 END) as pending_count,
+                SUM(CASE WHEN cb.status='accepted' THEN 1 ELSE 0 END) as accepted_count,
+                SUM(CASE WHEN cb.status='rejected' THEN 1 ELSE 0 END) as rejected_count
+            FROM course_offerings co
+            JOIN courses c ON co.course_id = c.course_id
+            LEFT JOIN course_biddings cb ON co.offering_id = cb.offering_id
+            WHERE c.course_type LIKE '%选修%'
+            GROUP BY co.offering_id
+            HAVING bid_count > 0
+            ORDER BY bid_count DESC, co.offering_id
+        """
+        
+        offerings = self.db.execute_query(sql)
+        
+        if not offerings:
+            no_data_label = ctk.CTkLabel(
+                content_frame,
+                text="暂无选修课竞价数据",
+                font=("Microsoft YaHei UI", 18),
+                text_color="#666666"
+            )
+            no_data_label.pack(pady=100)
+            return
+        
+        # 创建表格
+        style = ttk.Style()
+        style.configure("Bidding.Treeview", 
+                       font=("Microsoft YaHei UI", 12), 
+                       rowheight=35,
+                       background="white",
+                       foreground="black",
+                       fieldbackground="white")
+        style.configure("Bidding.Treeview.Heading", 
+                       font=("Microsoft YaHei UI", 13, "bold"),
+                       background="#E8F4F8",
+                       foreground=self.BUPT_BLUE,
+                       relief="flat")
+        
+        columns = ("id", "course", "type", "time", "classroom", "capacity", "bids", "pending", "accepted", "rejected", "max_p", "min_p", "avg_p")
+        tree = ttk.Treeview(
+            content_frame,
+            columns=columns,
+            show="headings",
+            height=18,
+            style="Bidding.Treeview"
+        )
+        
+        tree.heading("id", text="ID")
+        tree.heading("course", text="课程名称")
+        tree.heading("type", text="类型")
+        tree.heading("time", text="上课时间")
+        tree.heading("classroom", text="教室")
+        tree.heading("capacity", text="容量/已选")
+        tree.heading("bids", text="总投入")
+        tree.heading("pending", text="待处理")
+        tree.heading("accepted", text="已接受")
+        tree.heading("rejected", text="已拒绝")
+        tree.heading("max_p", text="最高分")
+        tree.heading("min_p", text="最低分")
+        tree.heading("avg_p", text="平均分")
+        
+        tree.column("id", width=80)
+        tree.column("course", width=150)
+        tree.column("type", width=100)
+        tree.column("time", width=120)
+        tree.column("classroom", width=90)
+        tree.column("capacity", width=80)
+        tree.column("bids", width=70)
+        tree.column("pending", width=70)
+        tree.column("accepted", width=70)
+        tree.column("rejected", width=70)
+        tree.column("max_p", width=70)
+        tree.column("min_p", width=70)
+        tree.column("avg_p", width=70)
+        
+        for offering in offerings:
+            bid_count = offering.get('bid_count', 0) or 0
+            max_points = offering.get('max_points', 0) or 0
+            min_points = offering.get('min_points', 0) or 0
+            avg_points = offering.get('avg_points', 0) or 0
+            pending_count = offering.get('pending_count', 0) or 0
+            accepted_count = offering.get('accepted_count', 0) or 0
+            rejected_count = offering.get('rejected_count', 0) or 0
+            
+            capacity_text = f"{offering['max_students']}/{offering.get('current_students', 0) or 0}"
+            
+            tree.insert("", "end", values=(
+                offering['offering_id'],
+                offering['course_name'],
+                offering.get('course_type', ''),
+                offering.get('class_time', ''),
+                offering.get('classroom', ''),
+                capacity_text,
+                bid_count,
+                pending_count,
+                accepted_count,
+                rejected_count,
+                f"{max_points:.0f}",
+                f"{min_points:.0f}",
+                f"{avg_points:.1f}"
+            ), tags=(offering['offering_id'],))
+        
+        # 双击查看详细排名
+        def on_double_click(event):
+            try:
+                selection = tree.selection()
+                if selection:
+                    item = tree.item(selection[0])
+                    offering_id = item['values'][0]
+                    course_name = item['values'][1]
+                    class_time = item['values'][2]
+                    classroom = item['values'][3]
+                    self.show_bidding_ranking_dialog(dialog, offering_id, course_name, class_time, classroom)
+            except Exception as e:
+                Logger.error(f"打开竞价排名对话框失败: {e}", exc_info=True)
+                messagebox.showerror("错误", f"打开对话框失败：{str(e)}", parent=dialog)
+        
+        tree.bind("<Double-1>", on_double_click)
+        
+        scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # 提示信息
+        tip_label = ctk.CTkLabel(
+            main_frame,
+            text="💡 双击课程可查看详细竞价排名",
+            font=("Microsoft YaHei UI", 12),
+            text_color="#666666"
+        )
+        tip_label.pack(pady=10)
+        
+        # 关闭按钮
+        close_button = ctk.CTkButton(
+            main_frame,
+            text="关闭",
+            width=150,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            fg_color="#95A5A6",
+            hover_color="#7F8C8D",
+            command=dialog.destroy
+        )
+        close_button.pack(pady=(0, 20))
+    
+    def show_bidding_ranking_dialog(self, parent_window, offering_id, course_name, class_time, classroom):
+        """显示课程的详细竞价排名"""
+        dialog = ctk.CTkToplevel(parent_window)
+        dialog.title(f"竞价排名 - {course_name}")
+        dialog.geometry("700x600")
+        dialog.resizable(True, True)
+        dialog.transient(parent_window)
+        dialog.grab_set()
+        
+        # 居中显示
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (700 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (600 // 2)
+        dialog.geometry(f"700x600+{x}+{y}")
+        
+        # 主容器
+        main_frame = ctk.CTkFrame(dialog, fg_color="white")
+        main_frame.pack(fill="both", expand=True)
+        
+        # 标题区域
+        header_frame = ctk.CTkFrame(main_frame, fg_color=self.BUPT_BLUE, height=100)
+        header_frame.pack(fill="x")
+        header_frame.pack_propagate(False)
+        
+        title_label = ctk.CTkLabel(
+            header_frame,
+            text=f"{course_name}\n{class_time} | {classroom}",
+            font=("Microsoft YaHei UI", 18, "bold"),
+            text_color="white",
+            justify="center"
+        )
+        title_label.pack(expand=True)
+        
+        # 内容区域
+        content_frame = ctk.CTkFrame(main_frame, fg_color="white")
+        content_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # 获取竞价排名
+        ranking = self.bidding_manager.get_bidding_ranking(offering_id)
+        
+        if not ranking:
+            no_data_label = ctk.CTkLabel(
+                content_frame,
+                text="暂无竞价数据",
+                font=("Microsoft YaHei UI", 16),
+                text_color="#666666"
+            )
+            no_data_label.pack(pady=100)
+        else:
+            # 创建表格
+            style = ttk.Style()
+            style.configure("Ranking.Treeview", 
+                           font=("Microsoft YaHei UI", 13), 
+                           rowheight=35,
+                           background="white",
+                           foreground="black",
+                           fieldbackground="white")
+            style.configure("Ranking.Treeview.Heading", 
+                           font=("Microsoft YaHei UI", 14, "bold"),
+                           background="#E8F4F8",
+                           foreground=self.BUPT_BLUE,
+                           relief="flat")
+            
+            columns = ("rank", "student_id", "name", "points", "time", "status")
+            tree = ttk.Treeview(
+                content_frame,
+                columns=columns,
+                show="headings",
+                height=15,
+                style="Ranking.Treeview"
+            )
+            
+            tree.heading("rank", text="排名")
+            tree.heading("student_id", text="学号")
+            tree.heading("name", text="姓名")
+            tree.heading("points", text="投入积分")
+            tree.heading("time", text="投入时间")
+            tree.heading("status", text="状态")
+            
+            tree.column("rank", width=50)
+            tree.column("student_id", width=100)
+            tree.column("name", width=80)
+            tree.column("points", width=80)
+            tree.column("time", width=140)
+            tree.column("status", width=80)
+            
+            # 状态映射
+            status_map = {
+                'pending': '⏳ 待处理',
+                'accepted': '✓ 已接受',
+                'rejected': '✗ 已拒绝'
+            }
+            
+            for bid in ranking:
+                status_text = status_map.get(bid.get('status', 'pending'), '未知')
+                status_tag = bid.get('status', 'pending')
+                
+                tree.insert("", "end", values=(
+                    bid['rank'],
+                    bid['student_id'],
+                    bid['student_name'],
+                    bid['points_bid'],
+                    bid['bid_time'],
+                    status_text
+                ), tags=(status_tag,))
+            
+            # 设置标签颜色
+            tree.tag_configure("pending", foreground="#E67E22")   # 橙色 - 待处理
+            tree.tag_configure("accepted", foreground="#27AE60")  # 绿色 - 已接受
+            tree.tag_configure("rejected", foreground="#E74C3C")  # 红色 - 已拒绝
+            
+            scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=tree.yview)
+            tree.configure(yscrollcommand=scrollbar.set)
+            
+            tree.pack(side="left", fill="both", expand=True)
+            scrollbar.pack(side="right", fill="y")
+        
+        # 关闭按钮
+        close_button = ctk.CTkButton(
+            main_frame,
+            text="关闭",
+            width=150,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            fg_color="#95A5A6",
+            hover_color="#7F8C8D",
+            command=dialog.destroy
+        )
+        close_button.pack(pady=(0, 20))
     
     def refresh_user_list(self):
         """刷新用户列表"""
