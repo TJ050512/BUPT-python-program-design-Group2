@@ -621,9 +621,16 @@ class TeacherWindow:
             )
             hint_label.pack(pady=10, anchor="w", padx=20)
             
+            # 创建可滚动的课程列表容器
+            scrollable_frame = ctk.CTkScrollableFrame(
+                self.content_frame,
+                fg_color="transparent"
+            )
+            scrollable_frame.pack(fill="both", expand=True, padx=20, pady=10)
+            
             for course in courses:
-                card = ctk.CTkFrame(self.content_frame, fg_color="#F8F9FA")
-                card.pack(fill="x", padx=20, pady=5)
+                card = ctk.CTkFrame(scrollable_frame, fg_color="#F8F9FA")
+                card.pack(fill="x", pady=5)
                 
                 # 左侧：课程信息
                 info_frame = ctk.CTkFrame(card, fg_color="transparent")

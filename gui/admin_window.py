@@ -946,16 +946,16 @@ class AdminWindow:
         """查看选修课竞价对话框"""
         dialog = ctk.CTkToplevel(self.root)
         dialog.title("选修课竞价情况")
-        dialog.geometry("900x700")
+        dialog.geometry("1200x700")
         dialog.resizable(True, True)
         dialog.transient(self.root)
         dialog.grab_set()
         
         # 居中显示
         dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() // 2) - (900 // 2)
+        x = (dialog.winfo_screenwidth() // 2) - (1200 // 2)
         y = (dialog.winfo_screenheight() // 2) - (700 // 2)
-        dialog.geometry(f"900x700+{x}+{y}")
+        dialog.geometry(f"1200x700+{x}+{y}")
         
         # 主容器
         main_frame = ctk.CTkFrame(dialog, fg_color="white")
@@ -1055,19 +1055,19 @@ class AdminWindow:
         tree.heading("min_p", text="最低分")
         tree.heading("avg_p", text="平均分")
         
-        tree.column("id", width=40)
-        tree.column("course", width=120)
-        tree.column("type", width=80)
-        tree.column("time", width=90)
-        tree.column("classroom", width=70)
-        tree.column("capacity", width=70)
-        tree.column("bids", width=60)
-        tree.column("pending", width=60)
-        tree.column("accepted", width=60)
-        tree.column("rejected", width=60)
-        tree.column("max_p", width=60)
-        tree.column("min_p", width=60)
-        tree.column("avg_p", width=60)
+        tree.column("id", width=80)
+        tree.column("course", width=150)
+        tree.column("type", width=100)
+        tree.column("time", width=120)
+        tree.column("classroom", width=90)
+        tree.column("capacity", width=80)
+        tree.column("bids", width=70)
+        tree.column("pending", width=70)
+        tree.column("accepted", width=70)
+        tree.column("rejected", width=70)
+        tree.column("max_p", width=70)
+        tree.column("min_p", width=70)
+        tree.column("avg_p", width=70)
         
         for offering in offerings:
             bid_count = offering.get('bid_count', 0) or 0

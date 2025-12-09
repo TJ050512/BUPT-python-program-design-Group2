@@ -219,7 +219,7 @@ class EnrollmentManager:
 
                 # 5. 检查退课后的人数，如果不满就重新开放竞价
                 offering_info = self.db.execute_query("""
-                    SELECT current_students, max_students, bidding_status, course_type
+                    SELECT co.current_students, co.max_students, co.bidding_status, c.course_type
                     FROM course_offerings co
                     JOIN courses c ON co.course_id = c.course_id
                     WHERE co.offering_id = ?
