@@ -520,6 +520,27 @@ class DatabaseInterface:
         params: List[Any] = []
         if student_id:
             params.append(student_id)  # 对应 is_enrolled 子查询里的 ?
+            
+            # 排除该学生已选过的课程（任何班级）或已投入积分竞价的课程
+            sql += """
+            AND o.course_id NOT IN (
+                -- 已选课程
+                SELECT co.course_id
+                FROM enrollments e
+                JOIN course_offerings co ON e.offering_id = co.offering_id
+                WHERE e.student_id = ?
+                AND e.status = 'enrolled'
+                UNION
+                -- 已投入积分竞价的课程
+                SELECT co.course_id
+                FROM course_biddings cb
+                JOIN course_offerings co ON cb.offering_id = co.offering_id
+                WHERE cb.student_id = ?
+                AND cb.status IN ('pending', 'accepted')
+            )
+            """
+            params.append(student_id)  # 第一个子查询
+            params.append(student_id)  # 第二个子查询
 
         # ③ 如果学生信息齐全，则追加“按学年过滤”
         if student_id and major_id and academic_year:

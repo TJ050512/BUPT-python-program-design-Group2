@@ -397,7 +397,7 @@ class Database:
             BEGIN
                 SELECT
                     CASE
-                        -- 检查学生是否已经选了这门课程的任何一个班级
+                        -- 检查学生是否已经选了这门课程的任何一个班级（只检查enrolled和completed状态）
                         WHEN EXISTS (
                             SELECT 1
                             FROM enrollments e
@@ -405,7 +405,9 @@ class Database:
                             JOIN course_offerings o ON e.offering_id = o.offering_id
                             WHERE e.student_id = NEW.student_id -- 目标学生
                               -- 当前尝试插入的 offering_id 对应的 course_id
-                              AND o.course_id = (SELECT course_id FROM course_offerings WHERE offering_id = NEW.offering_id) 
+                              AND o.course_id = (SELECT course_id FROM course_offerings WHERE offering_id = NEW.offering_id)
+                              -- 只检查已选课（enrolled）和已完成（completed）的记录，忽略已退课（dropped）的记录
+                              AND e.status IN ('enrolled', 'completed')
                         )
                         THEN RAISE(ABORT, '该学生已选了该课程的任一班级，不能重复选择')
                     END;

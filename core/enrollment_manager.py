@@ -12,14 +12,18 @@ from utils.logger import Logger
 class EnrollmentManager:
     """选课管理类"""
     
-    def __init__(self, db):
+    def __init__(self, db, points_manager=None, bidding_manager=None):
         """
         初始化选课管理器
         
         Args:
             db: 数据库实例
+            points_manager: 积分管理器实例（可选）
+            bidding_manager: 竞价管理器实例（可选）
         """
         self.db = db
+        self.points_manager = points_manager
+        self.bidding_manager = bidding_manager
         Logger.info("选课管理器初始化完成")
     
     def enroll_course(self, student_id: str, offering_id: int) -> Tuple[bool, str]:
@@ -162,12 +166,34 @@ class EnrollmentManager:
                 # 4. 更新课程选课人数
                 sql = "UPDATE course_offerings SET current_students = current_students - 1 WHERE offering_id = ?"
                 self.db.execute_update(sql, (offering_id,))
+
+                # 5. 检查退课后的人数，如果不满就重新开放竞价
+                offering_info = self.db.execute_query("""
+                    SELECT current_students, max_students, bidding_status, course_type
+                    FROM course_offerings co
+                    JOIN courses c ON co.course_id = c.course_id
+                    WHERE co.offering_id = ?
+                """, (offering_id,))
                 
-                # 如果原来是满的，改为open
-                self.db.update_data('course_offerings', 
-                                  {'status': 'open'}, 
-                                  {'offering_id': offering_id, 'status': 'full'})
-                
+                if offering_info:
+                    current = offering_info[0]['current_students']
+                    max_students = offering_info[0]['max_students']
+                    course_type = offering_info[0].get('course_type', '')
+                    
+                    update_data = {}
+                    
+                    # 如果原来是满的，改为open
+                    if current < max_students:
+                        update_data['status'] = 'open'
+                        
+                        # 如果是选修课且人数不满，重新开放竞价
+                        if '选修' in course_type:
+                            update_data['bidding_status'] = 'open'
+                            Logger.info(f"  退课后人数不满 ({current}/{max_students})，已重新开放竞价")
+                    
+                    if update_data:
+                        self.db.update_data('course_offerings', update_data, {'offering_id': offering_id})
+
                 Logger.info(f"学生 {student_id} 退课成功: offering_id={offering_id}")
                 return True, "退课成功"
             else:
@@ -444,3 +470,154 @@ class EnrollmentManager:
         
         result = self.db.execute_query(sql, (student_id, course_id))
         return result[0]['course_name'] if result else None
+    
+    def enroll_course_with_points(self, student_id: str, offering_id: int, 
+                                  points: int = 0) -> Tuple[bool, str]:
+        """
+        带积分的选课（区分必修/选修）
+        
+        Args:
+            student_id: 学号
+            offering_id: 开课计划ID
+            points: 投入的积分（选修课需要）
+        
+        Returns:
+            (是否成功, 消息)
+        """
+        try:
+            # 1. 获取课程信息，判断是必修课还是选修课
+            offering = self._get_offering_info(offering_id)
+            if not offering:
+                return False, "课程不存在"
+            
+            course_type = offering.get('course_type', '')
+            
+            # 2. 根据课程类型选择不同的选课逻辑
+            if course_type == '必修':
+                # 必修课：直接选课，不扣积分
+                return self.enroll_course(student_id, offering_id)
+            else:
+                # 选修课：调用竞价管理器投入积分
+                if not self.bidding_manager:
+                    return False, "竞价管理器未初始化"
+                
+                if points <= 0:
+                    return False, "选修课需要投入积分（1-100分）"
+                
+                # 调用竞价管理器投入积分
+                success, msg = self.bidding_manager.place_bid(student_id, offering_id, points)
+                
+                if success:
+                    return True, f"投入成功，已为该选修课投入{points}分，等待竞价截止后录取"
+                else:
+                    return False, msg
+                    
+        except Exception as e:
+            Logger.error(f"选课失败: {e}")
+            return False, f"选课失败：{str(e)}"
+    
+    def drop_course_with_refund(self, student_id: str, 
+                               offering_id: int) -> Tuple[bool, str]:
+        """
+        退课并退还积分（如果是选修课）
+        
+        Args:
+            student_id: 学号
+            offering_id: 开课计划ID
+        
+        Returns:
+            (是否成功, 消息)
+        """
+        try:
+            # 1. 获取课程信息
+            offering = self._get_offering_info(offering_id)
+            if not offering:
+                return False, "课程不存在"
+            
+            course_type = offering.get('course_type', '')
+            
+            # 2. 检查是否已选该课程
+            enrollment = self._get_enrollment(student_id, offering_id)
+            if not enrollment:
+                return False, "您未选该课程"
+            
+            if enrollment['status'] != 'enrolled':
+                return False, "该课程不可退课"
+            
+            # 3. 检查是否已有成绩
+            grade = self._get_grade_by_enrollment(enrollment['enrollment_id'])
+            if grade and grade.get('score') is not None:
+                return False, "已录入成绩的课程不可退课"
+            
+            # 4. 执行退课操作
+            count = self.db.update_data('enrollments', 
+                                       {'status': 'dropped'}, 
+                                       {'enrollment_id': enrollment['enrollment_id']})
+            
+            if count > 0:
+                # 5. 更新课程选课人数
+                sql = "UPDATE course_offerings SET current_students = current_students - 1 WHERE offering_id = ?"
+                self.db.execute_update(sql, (offering_id,))
+
+                # 5.5. 检查退课后的人数，如果不满就重新开放竞价
+                offering_info = self.db.execute_query("""
+                    SELECT current_students, max_students, bidding_status
+                    FROM course_offerings
+                    WHERE offering_id = ?
+                """, (offering_id,))
+                
+                if offering_info:
+                    current = offering_info[0]['current_students']
+                    max_students = offering_info[0]['max_students']
+                    
+                    update_data = {}
+                    
+                    # 如果原来是满的，改为open
+                    if current < max_students:
+                        update_data['status'] = 'open'
+                        
+                        # 如果是选修课且人数不满，重新开放竞价
+                        if '选修' in course_type:
+                            update_data['bidding_status'] = 'open'
+                            Logger.info(f"  退课后人数不满 ({current}/{max_students})，已重新开放竞价")
+                    
+                    if update_data:
+                        self.db.update_data('course_offerings', update_data, {'offering_id': offering_id})
+
+                # 6. 如果是选修课，退还积分
+                if course_type == '选修' and self.points_manager and self.bidding_manager:
+                    # 查询该学生对该课程的投入记录
+                    bid_info = self.bidding_manager.get_bid_info(student_id, offering_id)
+                    
+                    if bid_info and bid_info.get('status') == 'accepted':
+                        points = bid_info.get('points_bid', 0)
+                        
+                        # 退还积分
+                        success, refund_msg = self.points_manager.refund_points(
+                            student_id,
+                            points,
+                            f"退选选修课（课程ID: {offering_id}）"
+                        )
+                        
+                        if success:
+                            # 更新竞价状态为cancelled
+                            self.db.update_data(
+                                'course_biddings',
+                                {'status': 'cancelled'},
+                                {'student_id': student_id, 'offering_id': offering_id}
+                            )
+                            
+                            Logger.info(f"学生 {student_id} 退课成功并退还积分: offering_id={offering_id}, points={points}")
+                            return True, f"退课成功，已退还{points}分"
+                        else:
+                            Logger.warning(f"退课成功但退还积分失败: {refund_msg}")
+                            return True, f"退课成功，但退还积分失败：{refund_msg}"
+                
+                Logger.info(f"学生 {student_id} 退课成功: offering_id={offering_id}")
+                return True, "退课成功"
+            else:
+                return False, "退课失败"
+            
+        except Exception as e:
+            Logger.error(f"退课失败: {e}")
+            return False, "退课失败，请稍后重试"

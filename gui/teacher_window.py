@@ -8,10 +8,13 @@ from tkinter import messagebox, ttk, simpledialog
 import tkinter as tk
 from pathlib import Path
 from PIL import Image
+from datetime import datetime
 from utils.logger import Logger
 from core.course_manager import CourseManager
 from core.enrollment_manager import EnrollmentManager
 from core.grade_manager import GradeManager
+from core.points_manager import PointsManager
+from core.bidding_manager import BiddingManager
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
@@ -45,6 +48,8 @@ class TeacherWindow:
         self.course_manager = CourseManager(db)
         self.enrollment_manager = EnrollmentManager(db)
         self.grade_manager = GradeManager(db)
+        self.points_manager = PointsManager(db)
+        self.bidding_manager = BiddingManager(db, self.points_manager)
         
         # 设置窗口
         self.root.title(f"北京邮电大学教学管理系统 - 教师端 - {user.name}")
@@ -179,6 +184,7 @@ class TeacherWindow:
             ("📚 我的课程", self.show_my_courses),
             ("📝 成绩录入", self.show_grade_input),
             ("👥 学生名单", self.show_students_list),
+            ("🎯 选课管理", self.show_enrollment_management),
             ("📊 数据分析", self.show_data_analysis),
             ("👤 个人信息", self.show_personal_info)
         ]
@@ -1178,9 +1184,1025 @@ class TeacherWindow:
         if courses:
             self.display_students_in_content(courses[0]['offering_id'], courses[0]['course_name'])
     
+    def show_enrollment_management(self):
+        """显示选课管理 - 包含选课学生列表和积分竞价信息"""
+        self.set_active_menu(3)
+        self.clear_content()
+        
+        Logger.info(f"教师查看选课管理页面: {self.user.name} ({self.user.id})")
+        
+        # 标题
+        title = ctk.CTkLabel(
+            self.content_frame,
+            text="选课管理",
+            font=("Microsoft YaHei UI", 24, "bold"),
+            text_color=self.BUPT_BLUE
+        )
+        title.pack(pady=20, anchor="w", padx=20)
+        
+        # 获取所有授课课程
+        courses = self.course_manager.get_teacher_courses(self.user.id)
+        
+        if not courses:
+            no_data_label = ctk.CTkLabel(
+                self.content_frame,
+                text="暂无授课课程",
+                font=("Microsoft YaHei UI", 14),
+                text_color="gray"
+            )
+            no_data_label.pack(pady=50)
+            return
+        
+        # 课程选择
+        course_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        course_frame.pack(fill="x", padx=20, pady=10)
+        
+        label = ctk.CTkLabel(
+            course_frame,
+            text="选择课程：",
+            font=("Microsoft YaHei UI", 14)
+        )
+        label.pack(side="left", padx=(0, 10))
+        
+        # 构建课程名称列表
+        course_names = []
+        for c in courses:
+            course_name = f"{c['course_name']} ({c['course_id']})"
+            if c.get('class_time') or c.get('classroom'):
+                details = []
+                if c.get('class_time'):
+                    details.append(c['class_time'])
+                if c.get('classroom'):
+                    details.append(c['classroom'])
+                if details:
+                    course_name += f" - {' | '.join(details)}"
+            course_names.append(course_name)
+        
+        self.enrollment_course_combo = ctk.CTkComboBox(
+            course_frame,
+            values=course_names,
+            width=500,
+            font=("Microsoft YaHei UI", 12),
+            command=self.on_enrollment_course_selected
+        )
+        self.enrollment_course_combo.pack(side="left")
+        self.enrollment_course_combo.set(course_names[0] if course_names else "")
+        
+        # 存储课程列表供查询使用
+        self.enrollment_courses_list = courses
+        
+        # 查询按钮
+        query_btn = ctk.CTkButton(
+            course_frame,
+            text="查询",
+            width=80,
+            fg_color=self.BUPT_BLUE,
+            command=self.query_enrollment_info
+        )
+        query_btn.pack(side="left", padx=10)
+        
+        # 选课信息显示区域容器
+        self.enrollment_display_container = None
+        
+        # 默认显示第一门课程的选课信息
+        if courses:
+            self.display_enrollment_info(courses[0]['offering_id'], courses[0])
+    
+    def on_enrollment_course_selected(self, choice):
+        """课程选择改变时的回调"""
+        try:
+            index = self.enrollment_course_combo.cget("values").index(choice)
+            offering_id = self.enrollment_courses_list[index]['offering_id']
+            course_info = self.enrollment_courses_list[index]
+            self.display_enrollment_info(offering_id, course_info)
+        except (ValueError, IndexError):
+            pass
+    
+    def query_enrollment_info(self):
+        """查询选课信息"""
+        try:
+            choice = self.enrollment_course_combo.get()
+            index = self.enrollment_course_combo.cget("values").index(choice)
+            offering_id = self.enrollment_courses_list[index]['offering_id']
+            course_info = self.enrollment_courses_list[index]
+            self.display_enrollment_info(offering_id, course_info)
+        except (ValueError, IndexError):
+            messagebox.showerror("错误", "请选择有效的课程")
+    
+    def display_enrollment_info(self, offering_id, course_info):
+        """显示选课信息（包括已选学生和积分竞价）"""
+        # 保存当前课程信息，供刷新使用
+        self.current_enrollment_course_info = course_info
+        self.current_enrollment_offering_id = offering_id
+        
+        # 清除之前的显示内容
+        if self.enrollment_display_container is not None:
+            self.enrollment_display_container.destroy()
+        
+        # 创建显示容器
+        self.enrollment_display_container = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        self.enrollment_display_container.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        # 分隔线
+        separator = ctk.CTkFrame(self.enrollment_display_container, height=2, fg_color="#E0E0E0")
+        separator.pack(fill="x", pady=(0, 15))
+        
+        course_name = course_info['course_name']
+        course_id = course_info['course_id']
+        course_type = course_info.get('course_type', '')
+        is_elective = course_type != '必修' and '必修' not in course_type and '基础' not in course_type
+        
+        # 课程信息标题
+        course_title = ctk.CTkLabel(
+            self.enrollment_display_container,
+            text=f"{course_name} ({course_id}) - 选课管理",
+            font=("Microsoft YaHei UI", 18, "bold"),
+            text_color=self.BUPT_BLUE
+        )
+        course_title.pack(pady=(0, 10), anchor="w")
+        
+        # 课程类型和容量信息
+        info_frame = ctk.CTkFrame(self.enrollment_display_container, fg_color="#F0F8FF", corner_radius=8)
+        info_frame.pack(fill="x", pady=(0, 15))
+        
+        info_text = f"课程类型: {course_type} | "
+        info_text += f"容量: {course_info.get('current_students', 0)}/{course_info.get('max_students', 0)}"
+        if is_elective:
+            bidding_status = self.bidding_manager.get_course_bidding_status(offering_id)
+            if bidding_status.get('exists'):
+                info_text += f" | 待处理竞价: {bidding_status.get('pending_bids', 0)}"
+        
+        info_label = ctk.CTkLabel(
+            info_frame,
+            text=info_text,
+            font=("Microsoft YaHei UI", 13),
+            text_color="#333333"
+        )
+        info_label.pack(pady=8, padx=15, anchor="w")
+        
+        # 获取已选课学生
+        enrolled_students = self.enrollment_manager.get_course_students(offering_id)
+        
+        # 创建选项卡（如果为选修课，显示两个选项卡：已选学生和积分竞价）
+        if is_elective:
+            # 创建选项卡框架
+            tab_frame = ctk.CTkFrame(self.enrollment_display_container, fg_color="transparent")
+            tab_frame.pack(fill="both", expand=True)
+            
+            # 选项卡按钮
+            tab_button_frame = ctk.CTkFrame(tab_frame, fg_color="transparent")
+            tab_button_frame.pack(fill="x", pady=(0, 10))
+            
+            self.enrollment_tab_var = ctk.StringVar(value="enrolled")
+            
+            enrolled_tab_btn = ctk.CTkButton(
+                tab_button_frame,
+                text="已选学生",
+                width=150,
+                height=35,
+                font=("Microsoft YaHei UI", 13),
+                fg_color=self.BUPT_BLUE if self.enrollment_tab_var.get() == "enrolled" else "#E0E0E0",
+                text_color="white" if self.enrollment_tab_var.get() == "enrolled" else "gray",
+                command=lambda: self.switch_enrollment_tab("enrolled", offering_id, course_info)
+            )
+            enrolled_tab_btn.pack(side="left", padx=(0, 5))
+            
+            bidding_tab_btn = ctk.CTkButton(
+                tab_button_frame,
+                text="积分竞价",
+                width=150,
+                height=35,
+                font=("Microsoft YaHei UI", 13),
+                fg_color=self.BUPT_BLUE if self.enrollment_tab_var.get() == "bidding" else "#E0E0E0",
+                text_color="white" if self.enrollment_tab_var.get() == "bidding" else "gray",
+                command=lambda: self.switch_enrollment_tab("bidding", offering_id, course_info)
+            )
+            bidding_tab_btn.pack(side="left")
+            
+            self.enrollment_tab_buttons = {
+                "enrolled": enrolled_tab_btn,
+                "bidding": bidding_tab_btn
+            }
+            
+            # 内容区域
+            self.enrollment_content_area = ctk.CTkFrame(tab_frame, fg_color="transparent")
+            self.enrollment_content_area.pack(fill="both", expand=True)
+            
+            # 默认显示已选学生
+            self.show_enrolled_students_table(offering_id, course_name, enrolled_students)
+        else:
+            # 必修课只显示已选学生
+            self.show_enrolled_students_table(offering_id, course_name, enrolled_students)
+    
+    def refresh_enrollment_display(self):
+        """刷新选课管理显示"""
+        if hasattr(self, 'current_enrollment_offering_id') and hasattr(self, 'current_enrollment_course_info'):
+            self.display_enrollment_info(self.current_enrollment_offering_id, self.current_enrollment_course_info)
+        else:
+            messagebox.showwarning("提示", "请先选择课程")
+    
+    def switch_enrollment_tab(self, tab_name, offering_id, course_info):
+        """切换选课管理选项卡"""
+        self.enrollment_tab_var.set(tab_name)
+        
+        # 更新按钮样式
+        for name, btn in self.enrollment_tab_buttons.items():
+            if name == tab_name:
+                btn.configure(fg_color=self.BUPT_BLUE, text_color="white")
+            else:
+                btn.configure(fg_color="#E0E0E0", text_color="gray")
+        
+        # 清除内容区域
+        for widget in self.enrollment_content_area.winfo_children():
+            widget.destroy()
+        
+        # 显示对应内容
+        if tab_name == "enrolled":
+            enrolled_students = self.enrollment_manager.get_course_students(offering_id)
+            self.show_enrolled_students_table(offering_id, course_info['course_name'], enrolled_students)
+        elif tab_name == "bidding":
+            self.show_bidding_ranking_table(offering_id, course_info)
+    
+    def show_enrolled_students_table(self, offering_id, course_name, enrolled_students):
+        """显示已选学生表格"""
+        # 保存当前信息供后续使用
+        self.current_enrolled_offering_id = offering_id
+        self.current_enrolled_course_name = course_name
+        
+        if not enrolled_students:
+            no_students_label = ctk.CTkLabel(
+                self.enrollment_content_area,
+                text="该课程暂无学生选课",
+                font=("Microsoft YaHei UI", 14),
+                text_color="gray"
+            )
+            no_students_label.pack(pady=50)
+            return
+        
+        # 操作按钮区域（放在表格上方）
+        button_frame = ctk.CTkFrame(self.enrollment_content_area, fg_color="#FFEBEE", corner_radius=8)
+        button_frame.pack(fill="x", pady=(0, 15), padx=0)
+        
+        button_inner = ctk.CTkFrame(button_frame, fg_color="transparent")
+        button_inner.pack(pady=12, padx=15)
+        
+        # 取消录取按钮
+        cancel_btn = ctk.CTkButton(
+            button_inner,
+            text="❌ 取消录取选中学生",
+            width=200,
+            height=40,
+            font=("Microsoft YaHei UI", 14, "bold"),
+            fg_color="#F44336",
+            hover_color="#D32F2F",
+            command=lambda: self.cancel_student_enrollment()
+        )
+        cancel_btn.pack(side="left", padx=(0, 15))
+        
+        # 刷新按钮
+        refresh_btn = ctk.CTkButton(
+            button_inner,
+            text="🔄 刷新",
+            width=120,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            fg_color="#666666",
+            hover_color="#555555",
+            command=lambda: self.refresh_enrollment_display()
+        )
+        refresh_btn.pack(side="left")
+        
+        # 提示信息
+        hint_label = ctk.CTkLabel(
+            button_inner,
+            text="💡 提示：可按住Ctrl/Cmd键多选学生",
+            font=("Microsoft YaHei UI", 12),
+            text_color="#666666"
+        )
+        hint_label.pack(side="left", padx=(15, 0))
+        
+        # 创建表格框架
+        table_frame = ctk.CTkFrame(self.enrollment_content_area)
+        table_frame.pack(fill="both", expand=False, pady=(0, 10))
+        
+        # 配置表格样式
+        style = ttk.Style()
+        style.configure("Enrollment.Treeview", 
+                       font=("Microsoft YaHei UI", 13), 
+                       rowheight=40,
+                       background="white",
+                       foreground="black",
+                       fieldbackground="white")
+        style.configure("Enrollment.Treeview.Heading", 
+                       font=("Microsoft YaHei UI", 14, "bold"),
+                       background="#E8F4F8",
+                       foreground=self.BUPT_BLUE,
+                       relief="flat")
+        style.map("Enrollment.Treeview.Heading",
+                 background=[("active", "#D0E8F0")])
+        
+        # 创建表格（支持多选）
+        tree = ttk.Treeview(
+            table_frame,
+            columns=("student_id", "name", "major", "class", "enrollment_date", "status"),
+            show="headings",
+            height=15,
+            style="Enrollment.Treeview",
+            selectmode="extended"  # 支持多选
+        )
+        
+        tree.heading("student_id", text="学号")
+        tree.heading("name", text="姓名")
+        tree.heading("major", text="专业")
+        tree.heading("class", text="班级")
+        tree.heading("enrollment_date", text="选课日期")
+        tree.heading("status", text="状态")
+        
+        tree.column("student_id", width=120)
+        tree.column("name", width=100)
+        tree.column("major", width=150)
+        tree.column("class", width=100)
+        tree.column("enrollment_date", width=150)
+        tree.column("status", width=80)
+        
+        for student in enrolled_students:
+            status_text = {"enrolled": "已选", "completed": "已完成", "dropped": "已退课"}.get(
+                student.get('status', 'enrolled'), "已选"
+            )
+            
+            tree.insert("", "end", values=(
+                student['student_id'],
+                student['student_name'],
+                student.get('major', '') or '',
+                student.get('class_name', '') or '',
+                student.get('enrollment_date', ''),
+                status_text
+            ))
+        
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # 保存tree引用
+        self.current_enrolled_tree = tree
+        
+        # 统计信息
+        count_label = ctk.CTkLabel(
+            self.enrollment_content_area,
+            text=f"共 {len(enrolled_students)} 名学生已选课",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            text_color=self.BUPT_BLUE
+        )
+        count_label.pack(pady=10, anchor="w")
+    
+    def show_bidding_ranking_table(self, offering_id, course_info):
+        """显示积分竞价排名表格"""
+        # 获取竞价状态
+        bidding_status = self.bidding_manager.get_course_bidding_status(offering_id)
+        
+        if not bidding_status.get('exists'):
+            no_data_label = ctk.CTkLabel(
+                self.enrollment_content_area,
+                text="无法获取竞价信息",
+                font=("Microsoft YaHei UI", 14),
+                text_color="gray"
+            )
+            no_data_label.pack(pady=50)
+            return
+        
+        # 获取竞价排名
+        ranking = self.bidding_manager.get_bidding_ranking(offering_id)
+        
+        # 显示统计信息
+        stats_frame = ctk.CTkFrame(self.enrollment_content_area, fg_color="#F0F8FF", corner_radius=8)
+        stats_frame.pack(fill="x", pady=(0, 15))
+        
+        stats_text = f"待处理竞价: {bidding_status.get('pending_bids', 0)} | "
+        stats_text += f"最高积分: {bidding_status.get('max_points', 0) or 0} | "
+        stats_text += f"最低积分: {bidding_status.get('min_points', 0) or 0} | "
+        avg_points = bidding_status.get('avg_points', 0) or 0
+        stats_text += f"平均积分: {avg_points:.1f}"
+        
+        stats_label = ctk.CTkLabel(
+            stats_frame,
+            text=stats_text,
+            font=("Microsoft YaHei UI", 13, "bold"),
+            text_color=self.BUPT_BLUE
+        )
+        stats_label.pack(pady=10, padx=15, anchor="w")
+        
+        if not ranking:
+            no_bids_label = ctk.CTkLabel(
+                self.enrollment_content_area,
+                text="暂无积分竞价记录",
+                font=("Microsoft YaHei UI", 14),
+                text_color="gray"
+            )
+            no_bids_label.pack(pady=50)
+            return
+        
+        # 先初始化tree变量供后续使用
+        self.current_bidding_tree = None
+        self.current_bidding_offering_id = offering_id
+        self.current_bidding_course_info = course_info
+        
+        # 操作按钮区域（放在表格上方）
+        button_frame = ctk.CTkFrame(self.enrollment_content_area, fg_color="#E8F5E9", corner_radius=8)
+        button_frame.pack(fill="x", pady=(0, 15), padx=0)
+        
+        button_inner = ctk.CTkFrame(button_frame, fg_color="transparent")
+        button_inner.pack(pady=12, padx=15)
+        
+        # 自动处理竞价按钮（按排名自动录取）
+        if bidding_status.get('pending_bids', 0) > 0:
+            auto_process_btn = ctk.CTkButton(
+                button_inner,
+                text="🚀 自动处理竞价（按排名录取）",
+                width=220,
+                height=40,
+                font=("Microsoft YaHei UI", 14, "bold"),
+                fg_color="#4CAF50",
+                hover_color="#45a049",
+                command=lambda: self.process_bidding_auto(offering_id, course_info)
+            )
+            auto_process_btn.pack(side="left", padx=(0, 15))
+        
+        # 手动录取选中学生按钮（始终显示）
+        manual_accept_btn = ctk.CTkButton(
+            button_inner,
+            text="✅ 录取选中学生",
+            width=170,
+            height=40,
+            font=("Microsoft YaHei UI", 14, "bold"),
+            fg_color=self.BUPT_BLUE,
+            hover_color=self.BUPT_LIGHT_BLUE,
+            command=lambda: self.manual_accept_students()
+        )
+        manual_accept_btn.pack(side="left", padx=(0, 15))
+        
+        # 刷新按钮
+        refresh_btn = ctk.CTkButton(
+            button_inner,
+            text="🔄 刷新",
+            width=120,
+            height=40,
+            font=("Microsoft YaHei UI", 14),
+            fg_color="#666666",
+            hover_color="#555555",
+            command=lambda: self.display_enrollment_info(offering_id, course_info)
+        )
+        refresh_btn.pack(side="left")
+        
+        # 创建表格框架（不使用expand=True，避免挤压按钮）
+        table_frame = ctk.CTkFrame(self.enrollment_content_area)
+        table_frame.pack(fill="both", expand=False, pady=(0, 10))
+        
+        # 配置表格样式
+        style = ttk.Style()
+        style.configure("BiddingRank.Treeview", 
+                       font=("Microsoft YaHei UI", 13), 
+                       rowheight=40,
+                       background="white",
+                       foreground="black",
+                       fieldbackground="white")
+        style.configure("BiddingRank.Treeview.Heading", 
+                       font=("Microsoft YaHei UI", 14, "bold"),
+                       background="#E8F4F8",
+                       foreground=self.BUPT_BLUE,
+                       relief="flat")
+        style.map("BiddingRank.Treeview.Heading",
+                 background=[("active", "#D0E8F0")])
+        
+        # 创建表格（支持多选）
+        tree = ttk.Treeview(
+            table_frame,
+            columns=("rank", "student_id", "name", "points_bid", "bid_time"),
+            show="headings",
+            height=15,
+            style="BiddingRank.Treeview",
+            selectmode="extended"  # 支持多选
+        )
+        
+        tree.heading("rank", text="排名")
+        tree.heading("student_id", text="学号")
+        tree.heading("name", text="姓名")
+        tree.heading("points_bid", text="投入积分")
+        tree.heading("bid_time", text="投入时间")
+        
+        tree.column("rank", width=60)
+        tree.column("student_id", width=110)
+        tree.column("name", width=100)
+        tree.column("points_bid", width=90)
+        tree.column("bid_time", width=150)
+        
+        # 标记前N名（N为课程容量）
+        max_students = course_info.get('max_students', 0) or 0
+        current_students = course_info.get('current_students', 0) or 0
+        available_slots = max_students - current_students
+        
+        for bid in ranking:
+            rank = bid.get('rank', 0)
+            # 如果排名在可用名额内，使用特殊标记
+            if rank <= available_slots:
+                tag = "accepted"
+            else:
+                tag = "rejected"
+            
+            tree.insert("", "end", values=(
+                rank,
+                bid['student_id'],
+                bid.get('student_name', ''),
+                bid['points_bid'],
+                bid.get('bid_time', '')
+            ), tags=(tag,))
+        
+        # 配置标签颜色
+        tree.tag_configure("accepted", background="#E8F5E9")  # 浅绿色
+        tree.tag_configure("rejected", background="#FFF3E0")  # 浅橙色
+        
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # 保存tree引用
+        self.current_bidding_tree = tree
+        
+        # 说明信息
+        info_text = f"共 {len(ranking)} 名学生参与竞价 | "
+        info_text += f"可用名额: {available_slots} | "
+        info_text += "绿色标记表示在当前排名下可被录取 | "
+        info_text += "可选中学生后点击'录取选中学生'，或点击'自动处理竞价'按排名自动录取"
+        
+        info_label = ctk.CTkLabel(
+            self.enrollment_content_area,
+            text=info_text,
+            font=("Microsoft YaHei UI", 12),
+            text_color="#666666"
+        )
+        info_label.pack(pady=10, anchor="w")
+    
+    def process_bidding_auto(self, offering_id, course_info):
+        """自动处理竞价（按排名自动录取）"""
+        course_name = course_info.get('course_name', '未知课程')
+        
+        # 确认对话框
+        if not messagebox.askyesno(
+            "确认处理",
+            f"确定要自动处理【{course_name}】的竞价吗？\n"
+            f"系统将按照积分排名自动录取前N名学生（N为可用名额）。",
+            parent=self.root
+        ):
+            return
+        
+        try:
+            # 调用竞价管理器处理竞价结果
+            success, message = self.bidding_manager.process_bidding_results(offering_id)
+            
+            if success:
+                Logger.info(f"教师自动处理竞价成功: {self.user.name} ({self.user.id}) - 课程: {course_name} (开课ID: {offering_id})")
+                messagebox.showinfo("成功", message, parent=self.root)
+                # 刷新显示 - 重新从数据库获取最新的课程信息
+                updated_course_info = self.course_manager.get_offering_by_id(offering_id)
+                if updated_course_info:
+                    self.display_enrollment_info(offering_id, updated_course_info)
+                else:
+                    self.display_enrollment_info(offering_id, course_info)
+            else:
+                Logger.warning(f"教师自动处理竞价失败: {self.user.name} ({self.user.id}) - {message}")
+                messagebox.showerror("失败", message, parent=self.root)
+        except Exception as e:
+            Logger.error(f"自动处理竞价异常: {e}", exc_info=True)
+            messagebox.showerror("错误", f"处理失败：{str(e)}", parent=self.root)
+    
+    def manual_accept_students(self):
+        """手动录取选中的学生"""
+        # 使用保存的tree和课程信息
+        if not hasattr(self, 'current_bidding_tree') or not self.current_bidding_tree:
+            messagebox.showerror("错误", "无法获取竞价表格信息", parent=self.root)
+            return
+        
+        tree = self.current_bidding_tree
+        offering_id = self.current_bidding_offering_id
+        course_info = self.current_bidding_course_info
+        
+        selection = tree.selection()
+        if not selection:
+            messagebox.showwarning("提示", "请先选择要录取的学生", parent=self.root)
+            return
+        
+        course_name = course_info.get('course_name', '未知课程')
+        selected_count = len(selection)
+        
+        # 获取选中学生的信息
+        selected_students = []
+        for item_id in selection:
+            item = tree.item(item_id)
+            values = item['values']
+            if len(values) >= 2:
+                student_id = values[1]  # 学号在第二列
+                student_name = values[2] if len(values) > 2 else ''  # 姓名在第三列
+                points_bid = values[3] if len(values) > 3 else 0  # 投入积分
+                selected_students.append({
+                    'student_id': student_id,
+                    'student_name': student_name,
+                    'points_bid': points_bid
+                })
+        
+        # 确认对话框
+        students_list = "\n".join([f"  - {s['student_name']} ({s['student_id']}) - 投入积分: {s['points_bid']}" 
+                                   for s in selected_students[:5]])
+        if len(selected_students) > 5:
+            students_list += f"\n  ... 还有 {len(selected_students) - 5} 名学生"
+        
+        if not messagebox.askyesno(
+            "确认录取",
+            f"确定要录取以下 {selected_count} 名学生吗？\n\n{students_list}\n\n"
+            f"录取后将从学生账户扣除相应积分。",
+            parent=self.root
+        ):
+            return
+        
+        # 检查课程容量
+        max_students = course_info.get('max_students', 0) or 0
+        current_students = course_info.get('current_students', 0) or 0
+        available_slots = max_students - current_students
+        
+        if selected_count > available_slots:
+            messagebox.showerror(
+                "错误",
+                f"可用名额不足！\n当前可用名额: {available_slots}\n选中学生数: {selected_count}",
+                parent=self.root
+            )
+            return
+        
+        # 逐个录取学生
+        success_count = 0
+        failed_students = []
+        
+        for student_info in selected_students:
+            student_id = student_info['student_id']
+            points = student_info['points_bid']
+            
+            try:
+                # 1. 获取竞价记录ID
+                bid_info = self.bidding_manager.get_bid_info(student_id, offering_id)
+                if not bid_info or bid_info.get('status') != 'pending':
+                    failed_students.append(f"{student_info['student_name']} ({student_id}): 竞价记录不存在或已处理")
+                    continue
+
+                bidding_id = bid_info['bidding_id']
+                
+                # 1.5 检查是否已选过该课程
+                existing_check = self.enrollment_manager._get_enrollment(student_id, offering_id)
+                if existing_check and existing_check['status'] == 'enrolled':
+                    failed_students.append(f"{student_info['student_name']} ({student_id}): 已选过该课程")
+                    continue
+                
+                # 1.6 检查是否选了同一门课程的其他班级
+                offering = self.course_manager.get_offering_by_id(offering_id)
+                if offering:
+                    same_course = self.enrollment_manager._check_same_course_enrolled(
+                        student_id, offering['course_id']
+                    )
+                    if same_course:
+                        failed_students.append(f"{student_info['student_name']} ({student_id}): 已选择了该课程的其他班级")
+                        continue
+
+                # 2. 更新竞价状态为accepted
+                self.db.update_data(
+                    'course_biddings',
+                    {
+                        'status': 'accepted',
+                        'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    },
+                    {'bidding_id': bidding_id}
+                )
+                
+                # 3. 扣除积分
+                success, msg = self.points_manager.deduct_points(
+                    student_id,
+                    points,
+                    f"选修课录取扣除（课程: {course_name}, 开课ID: {offering_id}）"
+                )
+                
+                if not success:
+                    # 如果扣除积分失败，回滚竞价状态
+                    self.db.update_data(
+                        'course_biddings',
+                        {
+                            'status': 'pending',
+                            'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        },
+                        {'bidding_id': bidding_id}
+                    )
+                    failed_students.append(f"{student_info['student_name']} ({student_id}): {msg}")
+                    continue
+                
+                # 4. 创建或更新选课记录
+                try:
+                    # 先检查是否已存在该学生的enrollment记录（可能是dropped状态）
+                    existing_enrollment = self.db.execute_query("""
+                        SELECT enrollment_id, status 
+                        FROM enrollments 
+                        WHERE student_id = ? AND offering_id = ?
+                        LIMIT 1
+                    """, (student_id, offering_id))
+                    
+                    result_success = False
+                    
+                    if existing_enrollment and existing_enrollment[0]['status'] == 'dropped':
+                        # 如果存在dropped状态的记录，更新为enrolled
+                        enrollment_id = existing_enrollment[0]['enrollment_id']
+                        update_count = self.db.update_data(
+                            'enrollments',
+                            {
+                                'status': 'enrolled',
+                                'enrollment_date': datetime.now().strftime('%Y-%m-%d')
+                            },
+                            {'enrollment_id': enrollment_id}
+                        )
+                        result_success = update_count > 0
+                    else:
+                        # 如果不存在，插入新记录
+                        enrollment_data = {
+                            'student_id': student_id,
+                            'offering_id': offering_id,
+                            'enrollment_date': datetime.now().strftime('%Y-%m-%d'),
+                            'status': 'enrolled'
+                        }
+                        result_id = self.db.insert_data('enrollments', enrollment_data)
+                        result_success = result_id is not None
+                    
+                    if result_success:
+                        success_count += 1
+                        Logger.info(f"教师手动录取学生: {self.user.name} ({self.user.id}) - 学生: {student_id}, 课程: {course_name}")
+                    else:
+                        # 操作失败，回滚积分和竞价状态
+                        self.points_manager.refund_points(
+                            student_id,
+                            points,
+                            f"录取失败退还积分（课程: {course_name}）"
+                        )
+                        self.db.update_data(
+                            'course_biddings',
+                            {
+                                'status': 'pending',
+                                'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            },
+                            {'bidding_id': bidding_id}
+                        )
+                        failed_students.append(f"{student_info['student_name']} ({student_id}): 选课记录创建失败")
+                        
+                except Exception as insert_error:
+                    # 插入失败，回滚积分和竞价状态
+                    Logger.error(f"插入enrollment记录失败: {insert_error}", exc_info=True)
+                    self.points_manager.refund_points(
+                        student_id,
+                        points,
+                        f"录取失败退还积分（课程: {course_name}）"
+                    )
+                    self.db.update_data(
+                        'course_biddings',
+                        {
+                            'status': 'pending',
+                            'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        },
+                        {'bidding_id': bidding_id}
+                    )
+                    failed_students.append(f"{student_info['student_name']} ({student_id}): {str(insert_error)}")
+                    
+            except Exception as e:
+                Logger.error(f"录取学生失败: {student_id}, {e}", exc_info=True)
+                failed_students.append(f"{student_info['student_name']} ({student_id}): {str(e)}")
+        
+        # 更新课程的current_students
+        if success_count > 0:
+            new_current = current_students + success_count
+            self.db.update_data(
+                'course_offerings',
+                {'current_students': new_current},
+                {'offering_id': offering_id}
+            )
+        
+        # 显示结果
+        result_message = f"处理完成！\n成功录取: {success_count} 名学生"
+        if failed_students:
+            result_message += f"\n失败: {len(failed_students)} 名学生\n\n失败详情:\n"
+            result_message += "\n".join(failed_students[:5])
+            if len(failed_students) > 5:
+                result_message += f"\n... 还有 {len(failed_students) - 5} 个失败记录"
+        
+        if success_count > 0:
+            messagebox.showinfo("处理完成", result_message, parent=self.root)
+            # 刷新显示 - 重新从数据库获取最新的课程信息
+            updated_course_info = self.course_manager.get_offering_by_id(offering_id)
+            if updated_course_info:
+                self.display_enrollment_info(offering_id, updated_course_info)
+            else:
+                # 如果获取失败，使用旧的course_info但更新人数
+                course_info['current_students'] = new_current
+                self.display_enrollment_info(offering_id, course_info)
+        else:
+            messagebox.showerror("处理失败", result_message, parent=self.root)
+    
+    def cancel_student_enrollment(self):
+        """取消录取选中的学生（支持批量） - 学生回到竞价队列"""
+        # 使用保存的tree和课程信息
+        if not hasattr(self, 'current_enrolled_tree') or not self.current_enrolled_tree:
+            messagebox.showerror("错误", "无法获取学生表格信息", parent=self.root)
+            return
+        
+        tree = self.current_enrolled_tree
+        offering_id = self.current_enrolled_offering_id
+        course_name = self.current_enrolled_course_name
+        
+        selection = tree.selection()
+        if not selection:
+            messagebox.showwarning("提示", "请先选择要取消录取的学生", parent=self.root)
+            return
+        
+        selected_count = len(selection)
+        
+        # 获取选中学生的信息
+        selected_students = []
+        for item_id in selection:
+            item = tree.item(item_id)
+            values = item['values']
+            if len(values) >= 2:
+                student_id = values[0]  # 学号在第一列
+                student_name = values[1] if len(values) > 1 else ''  # 姓名在第二列
+                selected_students.append({
+                    'student_id': student_id,
+                    'student_name': student_name
+                })
+        
+        # 确认对话框
+        students_list = "\n".join([f"  - {s['student_name']} ({s['student_id']})" 
+                                   for s in selected_students[:5]])
+        if len(selected_students) > 5:
+            students_list += f"\n  ... 还有 {len(selected_students) - 5} 名学生"
+        
+        if not messagebox.askyesno(
+            "确认取消录取",
+            f"确定要取消录取以下 {selected_count} 名学生吗？\n\n{students_list}\n\n"
+            f"取消录取后，学生将回到竞价队列，可以继续参与竞价。",
+            parent=self.root
+        ):
+            return
+        
+        # 执行取消录取
+        success_count = 0
+        failed_students = []
+        refunded_students = []  # 记录返还积分并回到竞价队列的学生
+        
+        for student_info in selected_students:
+            student_id = student_info['student_id']
+            
+            try:
+                # 1. 检查选课记录
+                enrollment = self.db.execute_query("""
+                    SELECT enrollment_id 
+                    FROM enrollments 
+                    WHERE student_id = ? AND offering_id = ? AND status = 'enrolled'
+                """, (student_id, offering_id))
+                
+                if not enrollment:
+                    failed_students.append(f"{student_info['student_name']} ({student_id}): 未找到选课记录")
+                    continue
+                
+                enrollment_id = enrollment[0]['enrollment_id']
+                
+                # 2. 获取竞价信息
+                bid_info = self.bidding_manager.get_bid_info(student_id, offering_id)
+                
+                if bid_info and bid_info.get('status') == 'accepted':
+                    points_bid = bid_info.get('points_bid', 0)
+                    
+                    # 3. 返还积分（先返还，失败则不继续）
+                    success, msg = self.points_manager.refund_points(
+                        student_id,
+                        points_bid,
+                        f"取消录取退还积分（课程: {course_name}, 开课ID: {offering_id}）"
+                    )
+                    
+                    if not success:
+                        failed_students.append(f"{student_info['student_name']} ({student_id}): 返还积分失败 - {msg}")
+                        continue
+                    
+                    # 4. 删除选课记录（标记为dropped）
+                    update_count = self.db.update_data(
+                        'enrollments',
+                        {'status': 'dropped'},
+                        {'enrollment_id': enrollment_id}
+                    )
+                    
+                    if update_count == 0:
+                        # 回滚积分
+                        self.points_manager.deduct_points(
+                            student_id,
+                            points_bid,
+                            f"回滚：取消录取失败（课程: {course_name}, 开课ID: {offering_id}）"
+                        )
+                        failed_students.append(f"{student_info['student_name']} ({student_id}): 更新选课记录失败")
+                        continue
+                    
+                    # 5. 将竞价状态改回pending（而不是cancelled）
+                    bidding_update_count = self.db.update_data(
+                        'course_biddings',
+                        {
+                            'status': 'pending',
+                            'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        },
+                        {'student_id': student_id, 'offering_id': offering_id}
+                    )
+                    
+                    if bidding_update_count == 0:
+                        Logger.warning(f"更新竞价状态失败: student_id={student_id}, offering_id={offering_id}")
+                    
+                    # 6. 更新课程选课人数
+                    self.db.execute_update(
+                        "UPDATE course_offerings SET current_students = current_students - 1 WHERE offering_id = ?",
+                        (offering_id,)
+                    )
+                    self.db.conn.commit()  # 确保提交
+                    
+                    # 7. 检查取消录取后的人数，如果不满就重新开放选课和竞价
+                    offering_info = self.db.execute_query("""
+                        SELECT co.current_students, co.max_students, co.bidding_status, c.course_type, co.status
+                        FROM course_offerings co
+                        JOIN courses c ON co.course_id = c.course_id
+                        WHERE co.offering_id = ?
+                    """, (offering_id,))
+                    
+                    if offering_info:
+                        current = offering_info[0]['current_students']
+                        max_students = offering_info[0]['max_students']
+                        course_type = offering_info[0].get('course_type', '')
+                        current_status = offering_info[0].get('status', '')
+                        
+                        update_data = {}
+                        
+                        # 如果原来是满的，改为open以允许其他学生选课
+                        if current < max_students and current_status == 'full':
+                            update_data['status'] = 'open'
+                            Logger.info(f"  取消录取后人数不满 ({current}/{max_students})，已重新开放选课")
+                            
+                            # 如果是选修课且人数不满，重新开放竞价
+                            if '选修' in course_type:
+                                update_data['bidding_status'] = 'open'
+                                Logger.info(f"  选修课已重新开放竞价")
+                        
+                        if update_data:
+                            self.db.update_data('course_offerings', update_data, {'offering_id': offering_id})
+                    
+                    success_count += 1
+                    refunded_students.append({
+                        'name': student_info['student_name'],
+                        'id': student_id,
+                        'points': points_bid
+                    })
+                    
+                    Logger.info(f"教师取消录取学生: {self.user.name} ({self.user.id}) - 学生: {student_id}, 课程: {course_name}, 返还积分: {points_bid}")
+                else:
+                    # 非竞价课程或状态异常
+                    failed_students.append(f"{student_info['student_name']} ({student_id}): 该学生不是通过竞价录取的")
+                    
+            except Exception as e:
+                Logger.error(f"取消录取学生失败: {student_id}, {e}", exc_info=True)
+                failed_students.append(f"{student_info['student_name']} ({student_id}): {str(e)}")
+        
+        # 显示结果
+        result_message = f"处理完成！\n成功取消录取: {success_count} 名学生"
+        
+        if refunded_students:
+            result_message += f"\n\n学生已回到竞价队列 ({len(refunded_students)} 名):"
+            for item in refunded_students[:5]:
+                result_message += f"\n  - {item['name']} ({item['id']}) - 返还积分: {item['points']}分"
+            if len(refunded_students) > 5:
+                result_message += f"\n  ... 还有 {len(refunded_students) - 5} 名学生"
+            result_message += "\n\n这些学生可以继续参与竞价或修改投入积分。"
+        
+        if failed_students:
+            result_message += f"\n\n失败: {len(failed_students)} 名学生"
+            result_message += "\n失败详情:\n"
+            result_message += "\n".join(failed_students[:5])
+            if len(failed_students) > 5:
+                result_message += f"\n... 还有 {len(failed_students) - 5} 个失败记录"
+        
+        if success_count > 0:
+            messagebox.showinfo("处理完成", result_message, parent=self.root)
+            # 刷新显示
+            self.refresh_enrollment_display()
+        else:
+            messagebox.showerror("处理失败", result_message, parent=self.root)
+    
     def show_data_analysis(self):
         """显示数据分析"""
-        self.set_active_menu(3)
+        self.set_active_menu(4)
         self.clear_content()
         
         title = ctk.CTkLabel(
@@ -1434,7 +2456,7 @@ class TeacherWindow:
     
     def show_personal_info(self):
         """显示个人信息"""
-        self.set_active_menu(4)
+        self.set_active_menu(5)
         self.clear_content()
         
         title = ctk.CTkLabel(
