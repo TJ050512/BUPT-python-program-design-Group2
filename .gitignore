@@ -36,7 +36,6 @@ logs/*.log
 *.log
 
 # 数据库文件
-*.db
 *.sqlite
 *.sqlite3
 data/*.db

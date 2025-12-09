@@ -49,6 +49,40 @@ class EnrollmentManager:
             if offering['current_students'] >= offering['max_students']:
                 return False, "该课程已满"
             
+            # 获取学期信息（从 offering 中获取，如果没有则从数据库查询）
+            semester = offering.get('semester')
+            Logger.debug(f"从offering获取semester: {repr(semester)}, offering_id={offering_id}")
+            
+            # 检查 semester 是否有有效值（不是 None 且不是空字符串）
+            if not semester or (isinstance(semester, str) and not semester.strip()):
+                # 如果 offering 中没有 semester，从数据库查询
+                Logger.debug(f"offering中没有semester，从数据库查询: offering_id={offering_id}")
+                off_rows = self.db.execute_query(
+                    "SELECT semester FROM course_offerings WHERE offering_id=? LIMIT 1",
+                    (offering_id,)
+                )
+                if not off_rows:
+                    Logger.error(f"无法从数据库获取offering信息: offering_id={offering_id}")
+                    return False, "无法获取课程学期信息"
+                
+                db_semester = off_rows[0].get('semester')
+                Logger.debug(f"从数据库查询到的semester: {repr(db_semester)}")
+                
+                if not db_semester or (isinstance(db_semester, str) and not db_semester.strip()):
+                    Logger.error(f"数据库中的semester也为空: offering_id={offering_id}, offering={offering}")
+                    return False, "无法获取课程学期信息"
+                semester = db_semester.strip() if isinstance(db_semester, str) else str(db_semester)
+            else:
+                semester = semester.strip() if isinstance(semester, str) else str(semester)
+            
+            # 最终验证 semester 有值
+            if not semester or not semester.strip():
+                Logger.error(f"最终验证失败: semester={repr(semester)}, offering_id={offering_id}")
+                return False, "无法获取课程学期信息"
+            
+            semester = semester.strip()  # 确保去除前后空格
+            Logger.info(f"选课学期确认: {repr(semester)}, offering_id={offering_id}")
+            
             # 2. 检查是否已选过该课程
             existing_enrollment = self._get_enrollment(student_id, offering_id)
             
@@ -61,8 +95,9 @@ class EnrollmentManager:
             if same_course_check:
                 return False, f"您已选择了【{same_course_check}】，不能重复选择同一门课程"
             
-            # 3. 检查时间冲突
-            conflict = self._check_time_conflict(student_id, offering['class_time'])
+            # 3. 检查时间冲突（包括公选课之间的冲突检查）
+            # 只检查当前学期的已选课程，不检查其他学期
+            conflict = self._check_time_conflict(student_id, offering['class_time'], offering_id, semester)
             if conflict:
                 return False, f"与已选课程【{conflict}】时间冲突"
             
@@ -72,22 +107,37 @@ class EnrollmentManager:
                 # 更新已存在的记录
                 count = self.db.update_data(
                     'enrollments',
-                    {'status': 'enrolled'},
+                    {'status': 'enrolled', 'semester': semester},
                     {'enrollment_id': existing_enrollment['enrollment_id']}
                 )
                 enrollment_id = existing_enrollment['enrollment_id'] if count > 0 else None
             else:
+                # 再次验证 semester 有值
+                if not semester or not semester.strip():
+                    Logger.error(f"插入选课记录前验证失败: semester为空, offering_id={offering_id}, student_id={student_id}")
+                    return False, "无法获取课程学期信息"
+                
                 try:
+                    # 最后一次验证 semester 有值
+                    if not semester:
+                        Logger.error(f"插入前semester验证失败: semester={repr(semester)}, offering_id={offering_id}, student_id={student_id}")
+                        return False, "无法获取课程学期信息"
+                    
                     sql = """
-                        INSERT INTO enrollments (student_id, offering_id, status)
-                        VALUES (?, ?, ?)
+                        INSERT INTO enrollments (student_id, offering_id, semester, status)
+                        VALUES (?, ?, ?, ?)
                     """
-                    self.db.cursor.execute(sql, (student_id, offering_id, 'enrolled'))
+                    Logger.info(f"插入选课记录: student_id={student_id}, offering_id={offering_id}, semester={repr(semester)}")
+                    self.db.cursor.execute(sql, (student_id, offering_id, semester, 'enrolled'))
                     self.db.conn.commit()
                     enrollment_id = self.db.cursor.lastrowid
+                    Logger.debug(f"选课记录插入成功: enrollment_id={enrollment_id}")
                 except sqlite3.OperationalError as db_error:
+                    error_msg = str(db_error)
+                    Logger.error(f"数据库操作错误: {error_msg}, semester={repr(semester)}, offering_id={offering_id}")
                     raise db_error
                 except Exception as db_error:
+                    Logger.error(f"插入选课记录异常: {db_error}, semester={repr(semester)}, offering_id={offering_id}")
                     raise db_error
             
             if enrollment_id:
@@ -221,6 +271,7 @@ class EnrollmentManager:
                 e.offering_id,
                 e.enrollment_date,
                 e.status,
+                COALESCE(e.semester, co.semester) as semester,
                 co.course_id,
                 c.course_name,
                 c.credits,
@@ -242,7 +293,7 @@ class EnrollmentManager:
             sql += " AND e.status = ?"
             params.append(status)
         
-        sql += " ORDER BY c.course_id"
+        sql += " ORDER BY e.semester DESC, c.course_id"
         
         return self.db.execute_query(sql, tuple(params))
     
@@ -331,13 +382,15 @@ class EnrollmentManager:
         result = self.db.execute_query(sql, (student_id, offering_id))
         return result[0]['count'] > 0 if result else False
     
-    def _check_time_conflict(self, student_id: str, class_time: str) -> Optional[str]:
+    def _check_time_conflict(self, student_id: str, class_time: str, offering_id: int = None, current_semester: str = None) -> Optional[str]:
         """
-        检查时间冲突
+        检查时间冲突（只检查当前学期的已选课程）
         
         Args:
             student_id: 学号
             class_time: 要检查的课程时间字符串
+            offering_id: 开课计划ID（可选，用于判断是否是公选课）
+            current_semester: 当前学期（如 2024-2025-1），只检查该学期的已选课程
         
         Returns:
             冲突的课程名称，无冲突返回None
@@ -350,21 +403,55 @@ class EnrollmentManager:
         if not current_time_slots:
             return None
         
-        # 获取学生已选的所有课程及其时间
-        sql = """
-            SELECT 
-                co.class_time,
-                c.course_name
-            FROM enrollments e
-            JOIN course_offerings co ON e.offering_id = co.offering_id
-            JOIN courses c ON co.course_id = c.course_id
-            WHERE e.student_id = ? 
-              AND e.status = 'enrolled'
-              AND co.class_time IS NOT NULL
-              AND co.class_time <> ''
-        """
+        # 检查当前要选的课程是否是公选课
+        is_current_public_elective = False
+        if offering_id:
+            current_offering_info = self.db.execute_query(
+                """
+                SELECT c.is_public_elective 
+                FROM course_offerings co
+                JOIN courses c ON co.course_id = c.course_id
+                WHERE co.offering_id = ?
+                """,
+                (offering_id,)
+            )
+            if current_offering_info and len(current_offering_info) > 0:
+                is_current_public_elective = bool(current_offering_info[0].get('is_public_elective', 0))
         
-        enrolled_courses = self.db.execute_query(sql, (student_id,))
+        # 获取学生已选的所有课程及其时间（只检查当前学期的课程）
+        # 如果 current_semester 为 None，则检查所有学期的课程（向后兼容）
+        if current_semester:
+            sql = """
+                SELECT 
+                    co.class_time,
+                    c.course_name,
+                    c.is_public_elective
+                FROM enrollments e
+                JOIN course_offerings co ON e.offering_id = co.offering_id
+                JOIN courses c ON co.course_id = c.course_id
+                WHERE e.student_id = ? 
+                  AND e.status = 'enrolled'
+                  AND e.semester = ?
+                  AND co.class_time IS NOT NULL
+                  AND co.class_time <> ''
+            """
+            enrolled_courses = self.db.execute_query(sql, (student_id, current_semester))
+        else:
+            # 如果没有提供学期，则检查所有学期的课程（向后兼容）
+            sql = """
+                SELECT 
+                    co.class_time,
+                    c.course_name,
+                    c.is_public_elective
+                FROM enrollments e
+                JOIN course_offerings co ON e.offering_id = co.offering_id
+                JOIN courses c ON co.course_id = c.course_id
+                WHERE e.student_id = ? 
+                  AND e.status = 'enrolled'
+                  AND co.class_time IS NOT NULL
+                  AND co.class_time <> ''
+            """
+            enrolled_courses = self.db.execute_query(sql, (student_id,))
         
         # 检查每个已选课程的时间段是否与当前课程冲突
         for course in enrolled_courses:
@@ -374,6 +461,10 @@ class EnrollmentManager:
             
             # 检查是否有时间段重叠
             if current_time_slots & enrolled_time_slots:  # 使用集合交集检查
+                # 如果当前课程和已选课程都是公选课，特别提示
+                is_enrolled_public_elective = bool(course.get('is_public_elective', 0))
+                if is_current_public_elective and is_enrolled_public_elective:
+                    return f"公选课【{course.get('course_name', '')}】与当前公选课时间冲突"
                 return course.get('course_name', '')
         
         return None
@@ -417,8 +508,8 @@ class EnrollmentManager:
                 start_period = int(match.group(2))
                 end_period = int(match.group(3))
                 
-                # 确保节次在合理范围内（1-12节）
-                if start_period < 1 or end_period > 12 or start_period > end_period:
+                # 确保节次在合理范围内（1-14节，支持晚上课程）
+                if start_period < 1 or end_period > 14 or start_period > end_period:
                     continue
                 
                 weekday = weekday_map.get(weekday_str)
