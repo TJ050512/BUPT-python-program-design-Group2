@@ -2,12 +2,14 @@
 客户端模块
 实现与服务器的通信
 """
-
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import socket
 import threading
 from typing import Optional, Dict, Callable
 from utils.logger import Logger
-from .protocol import Protocol
+from network.protocol import Protocol
 
 
 class Client:

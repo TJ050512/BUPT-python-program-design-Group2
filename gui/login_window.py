@@ -254,16 +254,40 @@ class LoginWindow:
         )
         login_button.pack(fill="x", pady=(0, 15))
         
+        # 底部链接区域
+        link_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
+        link_frame.pack(fill="x", pady=(0, 10))
+        
         # 忘记密码链接
         forgot_password_label = ctk.CTkLabel(
-            form_frame,
+            link_frame,
             text="忘记密码？",
             font=("Microsoft YaHei UI", 12),
             text_color=self.BUPT_BLUE,
             cursor="hand2"
         )
-        forgot_password_label.pack(pady=(0, 10))
+        forgot_password_label.pack(side="left")
         forgot_password_label.bind("<Button-1>", lambda e: self.show_forgot_password_dialog())
+        
+        # 分隔符
+        separator = ctk.CTkLabel(
+            link_frame,
+            text=" | ",
+            font=("Microsoft YaHei UI", 12),
+            text_color="gray"
+        )
+        separator.pack(side="left", padx=5)
+        
+        # 查看文档链接
+        docs_label = ctk.CTkLabel(
+            link_frame,
+            text="📖 查看文档",
+            font=("Microsoft YaHei UI", 12),
+            text_color=self.BUPT_BLUE,
+            cursor="hand2"
+        )
+        docs_label.pack(side="left")
+        docs_label.bind("<Button-1>", lambda e: self.show_document_viewer())
         
     def do_login(self):
         """执行登录"""
@@ -1013,6 +1037,16 @@ class LoginWindow:
         except Exception as e:
             Logger.error(f"验证用户信息失败: {e}")
             return None
+    
+    def show_document_viewer(self):
+        """显示文档查看窗口"""
+        try:
+            from gui.document_viewer import DocumentViewer
+            DocumentViewer(self.root)
+            Logger.info("用户打开文档查看窗口")
+        except Exception as e:
+            Logger.error(f"打开文档查看窗口失败: {e}")
+            messagebox.showerror("错误", f"打开文档查看窗口失败：{str(e)}")
     
     def on_close(self):
         """关闭窗口"""

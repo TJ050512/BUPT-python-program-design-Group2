@@ -569,6 +569,18 @@ class BiddingManager:
                     
                     # 4.3 创建或更新选课记录
                     try:
+                        # 获取开课信息的 semester
+                        offering_semester = self.db.execute_query("""
+                            SELECT semester FROM course_offerings WHERE offering_id=?
+                        """, (offering_id,))
+                        semester = None
+                        if offering_semester and offering_semester[0].get('semester'):
+                            semester = offering_semester[0]['semester']
+                        else:
+                            # 如果开课信息也没有 semester，使用当前学期
+                            import os
+                            semester = os.getenv("CURRENT_SEMESTER", "2024-2025-2")
+                        
                         # 先检查是否已存在该学生的enrollment记录（可能是dropped状态）
                         existing_enrollment = self.db.execute_query("""
                             SELECT enrollment_id, status 
@@ -586,6 +598,7 @@ class BiddingManager:
                                 'enrollments',
                                 {
                                     'status': 'enrolled',
+                                    'semester': semester,
                                     'enrollment_date': datetime.now().strftime('%Y-%m-%d')
                                 },
                                 {'enrollment_id': enrollment_id}
@@ -596,6 +609,7 @@ class BiddingManager:
                             enrollment_data = {
                                 'student_id': student_id,
                                 'offering_id': offering_id,
+                                'semester': semester,
                                 'enrollment_date': datetime.now().strftime('%Y-%m-%d'),
                                 'status': 'enrolled'
                             }

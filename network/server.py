@@ -2,13 +2,15 @@
 服务器端模块
 实现多客户端并发的服务器
 """
-
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import socket
 import threading
 import asyncio
 from typing import Dict, Optional, Callable
 from utils.logger import Logger
-from .protocol import Protocol
+from network.protocol import Protocol
 
 
 class Server:

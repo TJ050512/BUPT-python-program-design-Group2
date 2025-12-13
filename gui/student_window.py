@@ -233,10 +233,11 @@ class StudentWindow:
         )
         refresh_btn.pack(side="right")
         
-        # 当前学期（用于筛选本学期选课与竞价记录）
+        # 获取当前学期（环境变量，默认2024-2025-2）
         current_semester = os.getenv("CURRENT_SEMESTER", "2024-2025-2")
-
-        # 获取选课记录（仅当前学期，包含所有状态，便于展示）
+        
+        # 获取选课记录（仅显示当前学期的选课，包含所有状态，便于展示）
+        # 注意：按当前学期过滤，只显示本学期已选课程
         all_enrollments = self.enrollment_manager.get_student_enrollments(
             self.user.id, status=None, semester=current_semester
         )
@@ -246,7 +247,9 @@ class StudentWindow:
         
         # 获取所有pending/accepted/rejected状态的竞价记录（选修课投入但可能未确认）
         # 排除已经enrolled的课程
+        # 注意：竞价记录只显示当前学期的，因为学生通常只会在当前学期进行竞价
         enrolled_offering_ids = [e['offering_id'] for e in enrolled_courses]
+        current_semester = os.getenv("CURRENT_SEMESTER", "2024-2025-2")
         
         # 若数据库尚未创建 course_biddings 表，避免查询报错
         bidding_table_exists = self.db.execute_query(
@@ -1232,11 +1235,15 @@ class StudentWindow:
         
         # 获取当前学期（环境变量，默认2024-2025-2）
         current_semester = os.getenv("CURRENT_SEMESTER", "2024-2025-2")
+        Logger.info(f"我的课表 - 当前学期: {current_semester}, 学生: {self.user.id}")
 
         # 获取当前学期的选课记录，避免跨学期课程混杂
+        # 严格按学期过滤，只显示当前学期的课程
         enrollments = self.enrollment_manager.get_student_enrollments(
             self.user.id, status='enrolled', semester=current_semester
         )
+        
+        Logger.info(f"我的课表 - 查询到 {len(enrollments)} 门课程（学期: {current_semester}）")
         
         if not enrollments:
             # 没有选课记录
